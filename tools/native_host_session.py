@@ -22,7 +22,9 @@ def main(args):
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         config = {'identifier': 'com.auralyn.test.obs223', 'build': {'devUrl': f'http://127.0.0.1:{port}'}, 'bundle': {'externalBin': []},
-                  'app': {'appDirectoriesOverride': {key: str(root / key) for key in ['config', 'data', 'localData', 'cache', 'log']},
+                  # 製品の設定は変更せず、検証用ブリッジが結果を返すAPIだけを有効にする。
+                  'app': {'withGlobalTauri': True,
+                          'appDirectoriesOverride': {key: str(root / key) for key in ['config', 'data', 'localData', 'cache', 'log']},
                           'windows': [{'label': 'main', 'title': 'Auralyn OBS223 validation', 'visible': False}],
                           'security': {'capabilities': ['default', {'identifier': 'obs223-exit', 'windows': ['main'], 'permissions': ['process:allow-exit']}]}}}
         (root / 'tauri-config.json').write_text(json.dumps(config), encoding='utf-8')
