@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -174,10 +175,35 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
           << ",\"unavailableFramesAfterStart\":" << unavailable << ",\"blocks\":" << s.blocks
           << ",\"underruns\":" << s.underruns << ",\"overruns\":" << s.overruns
           << ",\"invalid\":" << s.invalid << ",\"stale\":" << s.stale << ",\"resets\":" << s.resets
-          << ",\"correctionPpm\":" << s.correction_ppm << ",\"flushRecorded\":false}\n";
+          << ",\"correctionPpm\":" << s.correction_ppm
+          << ",\"interpolation\":\"" << (s.interpolation == 1 ? "sinc48-poc" : "linear-poc") << "\",\"flushRecorded\":false}\n";
     timeline.flush(); stats.flush();
     if (!timeline || !stats || !started || unavailable || s.underruns || s.overruns || s.invalid || s.stale)
         throw std::runtime_error("offline transport measurement failed; retain evidence");
+}
+
+void sinc_boundaries() {
+    assert(std::isfinite(auralyn::mono(std::numeric_limits<float>::max(), std::numeric_limits<float>::max())));
+#ifdef AURALYN_SINC48_POC
+    for (double correction : {-2000.0, 2000.0}) {
+        Producer p; auralyn::Reader reader; std::array<float, 2048> l{}, r{};
+        reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 0);
+        for (size_t i = 0; i < 5000; i++) p.push(i % 2 ? 0x7f7fffff : 0xff7fffff, 0x7f7fffff);
+        reader.stats.correction_ppm = correction;
+        const auto count = allocations;
+        assert(reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
+        assert(allocations == count && reader.stats.interpolation == 1);
+        for (size_t i = 0; i < l.size(); i++) assert(std::isfinite(l[i]) && std::isfinite(r[i]));
+    }
+    Producer bad; auralyn::Reader reader; std::array<float, 1024> l{}, r{};
+    reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 0);
+    bad.fill(3000);
+    // 直接の出力開始位置より前のhistoryも、未完了tagを受け入れない。
+    bad.data[16 + (600 - 63) * 3] |= 1;
+    assert(!reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
+    assert(reader.stats.invalid == 1);
+    for (float value : l) assert(value == 0);
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -192,7 +218,7 @@ int main(int argc, char **argv) {
         std::cerr << "Usage: pcm_tests [--long | --quality input.f32 new-output-directory ppm]\n"; return 2;
     }
     const size_t seconds = argc == 2 && std::string(argv[1]) == "--long" ? 3600 : 120;
-    fixture(); failures();
+    fixture(); failures(); sinc_boundaries();
     for (uint32_t rate : {44100u,48000u,96000u}) {
         auralyn::BlockClock clock;
         const uint64_t begin=10000000000, first=clock.advance(1024,rate,begin);

@@ -6,6 +6,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#ifdef AURALYN_SINC48_POC
+#include <memory>
+#include "sinc48.hpp"
+#endif
 
 namespace auralyn {
 constexpr uint32_t magic = 0x41555043;
@@ -13,6 +17,7 @@ constexpr uint32_t capacity = 16384, header_words = 16, slot_words = 3;
 constexpr uint32_t words = header_words + capacity * slot_words, bytes = words * 4;
 static_assert(std::atomic_ref<uint32_t>::is_always_lock_free);
 static_assert(sizeof(float) == 4 && std::atomic_ref<uint32_t>::required_alignment <= 4);
+inline float mono(float left, float right) noexcept { return left * .5f + right * .5f; }
 inline uint32_t load(const uint32_t *p, size_t i) noexcept {
     // mappingは読み取り専用。loadは書込命令を使わず、全wordをatomicで読む。
     return std::atomic_ref<uint32_t>(const_cast<uint32_t &>(p[i])).load(std::memory_order_seq_cst);
@@ -28,8 +33,13 @@ struct Stats {
     uint64_t blocks = 0, underruns = 0, overruns = 0, invalid = 0, stale = 0, resets = 0;
     uint32_t queued = 0, min_queued = UINT32_MAX, max_queued = 0;
     double correction_ppm = 0;
+    uint32_t interpolation = 0;
 };
 class Reader {
+#ifdef AURALYN_SINC48_POC
+    // control側で生成・破棄。renderでは係数の再構築や割当を行わない。
+    std::unique_ptr<Sinc48> sinc_ = std::make_unique<Sinc48>();
+#endif
     uint32_t cursor_ = 0, epoch_ = UINT32_MAX, last_write_ = 0;
     uint64_t progress_ns_ = 0;
     double phase_ = 0;
@@ -64,12 +74,19 @@ public:
             stalled_ = true; reprime(write); return false;
         }
         const auto rate = load(p, 6), target = rate / 20;
+        bool use_sinc = false;
+        uint32_t history = 0, lookahead = 0;
+#ifdef AURALYN_SINC48_POC
+        use_sinc = rate == 48000 && obs_rate == 48000;
+        if (use_sinc) { history = uint32_t(Sinc48::past); lookahead = uint32_t(Sinc48::future); }
+#endif
+        stats.interpolation = use_sinc ? 1u : 0u;
         uint32_t available = write - cursor_;
         if (available >= capacity - 2) {
             stats.overruns++; reprime(write); return false;
         }
         if (!primed_) {
-            if (available < target) return false;
+            if (available < target + history) return false;
             cursor_ = write - target; phase_ = 0; available = target; primed_ = true;
         }
         stats.queued = available;
@@ -77,10 +94,27 @@ public:
         const double desired = std::clamp((double(available) - target) / target * 10000.0, -2000.0, 2000.0);
         stats.correction_ppm += std::clamp(desired - stats.correction_ppm, -5.0, 5.0);
         const double step = double(rate) / obs_rate * (1.0 + stats.correction_ppm / 1e6);
-        const auto needed = uint32_t(std::floor(phase_ + double(frames - 1) * step)) + 2;
+        const auto needed = uint32_t(std::floor(phase_ + double(frames - 1) * step)) + 2 + lookahead;
         if (available < needed) { stats.underruns++; reprime(write); return false; }
         bool good = true;
+#ifdef AURALYN_SINC48_POC
+        if (use_sinc) {
+            const size_t count = size_t(needed) + history;
+            if (count > Sinc48::cache_frames) good = false;
+            for (size_t i = 0; good && i < count; i++) {
+                std::array<float, 2> value{};
+                if (!frame(p, cursor_ - history + uint32_t(i), value)) { good = false; break; }
+                sinc_->left[i] = value[0]; sinc_->right[i] = value[1];
+            }
+        }
+#endif
         for (size_t i = 0; i < frames; i++) {
+            if (!good) break;
+#ifdef AURALYN_SINC48_POC
+            if (use_sinc) {
+                sinc_->sample(phase_, left[i], right[i]); phase_ += step; continue;
+            }
+#endif
             const auto integral = uint32_t(phase_);
             std::array<float, 2> a{}, b{};
             if (!frame(p, cursor_ + integral, a) || !frame(p, cursor_ + integral + 1, b)) { good = false; break; }

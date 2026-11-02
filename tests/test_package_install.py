@@ -70,6 +70,30 @@ class PackageInstallTests(unittest.TestCase):
     def contents(self):
         return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
 
+    def synthetic_evidence(self):
+        # validatorの単体fixture。実機1時間の証拠として保存・公開しない。
+        folder = self.folder / 'synthetic-contract-fixture'
+        folder.mkdir()
+        counters = {key: 0 for key in ['underruns', 'overruns', 'invalid', 'stale', 'resets', 'connections', 'missedLocks', 'clockRebases']}
+        counters['interpolation'] = 'sinc48-poc'
+        files = {str(ROOT / name): package.digest((ROOT / name).read_bytes()) for name in package.COMPILED_SOURCE}
+        files[str(folder / 'obs-plugins/64bit/auralyn-obs.dll')] = package.digest((ROOT / 'build/cmake/Release/auralyn-obs.dll').read_bytes())
+        files[str(folder / 'audio_engine.exe')] = 'b' * 64
+        manifest = {'scope': 'synthetic validator fixture, not physical acceptance', 'files': files}
+        run = {'scope': manifest['scope'], 'durationRequestedSeconds': 3600, 'elapsedSeconds': 3600,
+               'normalObsPreserved': True, 'physicalMonitorMuted': True,
+               'reference': {'dropped': 0, 'error': None}, 'baselineBridge': counters, 'finalBridge': counters.copy()}
+        names = ['requestedDurationReached', 'recordingContinuousAtSamples', 'recordingDurationWithinOneSecond',
+                 'audioPacketTimestampsContinuous', 'audioDurationWithinOneSecond', 'bridgeErrorsZero',
+                 'referenceCaptureComplete', 'obsAddedBufferZero', 'normalObsPreserved', 'physicalMonitorSilent',
+                 'codeManifestUnchanged', 'recordedAudioMatchesReference']
+        analysis = {'checks': dict.fromkeys(names, True), 'requestedSeconds': 3600, 'elapsedSeconds': 3600,
+                    'audioPackets': {'count': 168750, 'frames': 172800000, 'seconds': 3600, 'timestampGaps': 0},
+                    'maxObsAddedBufferMs': 0, 'waveformMatches': [{'seconds': t, 'rms': .1, 'normalizedCorrelation': .999} for t in [10, 1800, 3590]]}
+        for name, value in [('code-manifest.json', manifest), ('result.json', run), ('analysis.json', analysis)]:
+            (folder / name).write_text(json.dumps(value), encoding='utf-8')
+        return folder
+
     def test_source_revision_distinguishes_clean_modified_and_untracked_files(self):
         repo = self.folder / 'source'
         repo.mkdir()
@@ -253,8 +277,8 @@ class PackageInstallTests(unittest.TestCase):
         self.assertEqual(self.other.read_bytes(), b'other plugin data')
         self.assertFalse((root / install.JOURNAL).exists())
 
-    def test_package_uses_recorded_native_dll_and_only_allowlisted_source(self):
-        evidence = ROOT / 'build/native-20261102-163539/runs/20261102-165229/code-manifest.json'
+    def test_package_uses_matching_fixture_hashes_and_only_allowlisted_source(self):
+        evidence = self.synthetic_evidence() / 'code-manifest.json'
         evidence_copy = self.folder / 'evidence'
         evidence_copy.mkdir()
         for name in ['code-manifest.json', 'result.json', 'analysis.json']:
@@ -262,7 +286,7 @@ class PackageInstallTests(unittest.TestCase):
         evidence = evidence_copy / 'code-manifest.json'
         analysis_file = evidence_copy / 'analysis.json'
         analysis = json.loads(analysis_file.read_text(encoding='utf-8'))
-        # 原本は変更せず、記録された各波形から追加チェックを再判定する。
+        # 単体fixtureの波形判定を再計算する。実音声の測定ではない。
         analysis['checks']['recordedAudioMatchesReference'] = (
             len([m for m in analysis['waveformMatches'] if m['rms'] > 0 and m['normalizedCorrelation'] >= .95]) >= 3)
         analysis_file.write_text(json.dumps(analysis), encoding='utf-8')
@@ -299,7 +323,7 @@ class PackageInstallTests(unittest.TestCase):
 
     def test_evidence_rejects_failed_missing_silent_or_incomplete_audio(self):
         import copy
-        source = ROOT / 'build/native-20261102-163539/runs/20261102-165229'
+        source = self.synthetic_evidence()
         for name in ['code-manifest.json', 'result.json', 'analysis.json']:
             shutil.copy2(source / name, self.folder / name)
         path = self.folder / 'analysis.json'
@@ -327,8 +351,32 @@ class PackageInstallTests(unittest.TestCase):
             mutate(candidate)
             with self.subTest(mutation=mutate), self.assertRaises(ValueError):
                 check(candidate)
+        run_path = self.folder / 'result.json'
+        recorded_run = json.loads(run_path.read_text(encoding='utf-8'))
+        for mode in ['missing', 'changed', 'invalid']:
+            candidate = copy.deepcopy(recorded_run)
+            if mode == 'missing':
+                candidate['baselineBridge'].pop('interpolation')
+            elif mode == 'changed':
+                candidate['finalBridge']['interpolation'] = 'linear-poc'
+            else:
+                candidate['baselineBridge']['interpolation'] = candidate['finalBridge']['interpolation'] = 'unknown'
+            run_path.write_text(json.dumps(candidate), encoding='utf-8')
+            with self.subTest(interpolation=mode), self.assertRaises(ValueError):
+                check(valid)
+        run_path.write_text(json.dumps(recorded_run), encoding='utf-8')
         manifest_path = self.folder / 'code-manifest.json'
         manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        header = str(ROOT / 'src/sinc48.hpp')
+        for mode in ['missing', 'changed']:
+            candidate = copy.deepcopy(manifest)
+            if mode == 'missing':
+                candidate['files'].pop(header)
+            else:
+                candidate['files'][header] = 'a' * 64
+            manifest_path.write_text(json.dumps(candidate), encoding='utf-8')
+            with self.subTest(sinc_header=mode), self.assertRaises(ValueError):
+                check(valid)
         engine_key = next(key for key in manifest['files'] if key.lower().endswith('audio_engine.exe'))
         for mode in ['missing', 'invalid', 'ambiguous', 'case-alias', 'invalid-alias']:
             candidate = copy.deepcopy(manifest)

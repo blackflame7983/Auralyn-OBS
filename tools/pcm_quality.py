@@ -106,7 +106,7 @@ def analyze(args):
         'scope': 'offline PCM file analysis; source model is declared in modelStats; not shared memory IPC, OBS app, physical audio, real-time cost or listening acceptance',
         'inputSha256': sha(run / 'raw-input.f32'), 'afterSha256': sha(run / 'after.f32'),
         'statsSha256': sha(run / 'stats.json'), 'executableSha256': sha(args.executable),
-        'sourceFilesSha256': {name: sha(ROOT / name) for name in ['src/pcm.hpp', 'tests/pcm_tests.cpp', 'tools/pcm_quality.py']},
+        'sourceFilesSha256': {name: sha(ROOT / name) for name in ['src/pcm.hpp', 'src/sinc48.hpp', 'tests/pcm_tests.cpp', 'tools/pcm_quality.py'] if (ROOT / name).is_file()},
         'ppm': ppm, 'beforeRms': rms_a, 'afterRms': rms_b,
         'rmsGainDb': float(20 * np.log10(rms_b / rms_a)), 'toneBandGains': gains,
         'levelMatch': {'afterGainBeforeCommonAttenuation': gain, 'commonGain': common_gain},

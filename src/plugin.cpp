@@ -39,11 +39,13 @@ struct Source {
         std::atomic<uint64_t> blocks{0}, underruns{0}, overruns{0}, invalid{0}, stale{0}, resets{0};
         std::atomic<uint32_t> queued{0}, min_queued{UINT32_MAX}, max_queued{0};
         std::atomic<double> correction_ppm{0};
+        std::atomic<uint32_t> interpolation{0};
         void publish(const auralyn::Stats &s) noexcept {
             blocks.store(s.blocks); underruns.store(s.underruns); overruns.store(s.overruns);
             invalid.store(s.invalid); stale.store(s.stale); resets.store(s.resets);
             queued.store(s.queued); min_queued.store(s.min_queued); max_queued.store(s.max_queued);
             correction_ppm.store(s.correction_ppm);
+            interpolation.store(s.interpolation);
         }
     } telemetry;
     static_assert(std::atomic<double>::is_always_lock_free);
@@ -69,7 +71,8 @@ struct Source {
            <<",\"clockRebases\":"<<clock_rebases.load()<<",\"queued\":"<<telemetry.queued.load()
            <<",\"minQueued\":"<<telemetry.min_queued.load()<<",\"maxQueued\":"<<telemetry.max_queued.load()
            <<",\"correctionPpm\":"<<telemetry.correction_ppm.load()<<",\"producerFrame\":"<<frame
-           <<",\"producerRate\":"<<rate<<",\"state\":"<<state<<"}\n";
+           <<",\"producerRate\":"<<rate<<",\"state\":"<<state
+           <<",\"interpolation\":\""<<(telemetry.interpolation.load() == 1 ? "sinc48-poc" : "linear-poc")<<"\"}\n";
         out.close();
         MoveFileExW(pending.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
     }
@@ -156,7 +159,7 @@ bool render(void *data, uint64_t *ts, audio_output_data *audio, size_t channels,
     }
     for (size_t ch = 0; ch < channels; ch++) {
             auto out = audio->data[ch];
-            if (channels == 1) for (size_t i = 0; i < AUDIO_OUTPUT_FRAMES; i++) out[i] = (s.left[i] + s.right[i]) * 0.5f;
+            if (channels == 1) for (size_t i = 0; i < AUDIO_OUTPUT_FRAMES; i++) out[i] = auralyn::mono(s.left[i], s.right[i]);
             else if (ch < 2) std::copy_n(ch == 0 ? s.left.data() : s.right.data(), AUDIO_OUTPUT_FRAMES, out);
             else std::fill_n(out, AUDIO_OUTPUT_FRAMES, 0.0f);
     }

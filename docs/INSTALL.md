@@ -5,7 +5,7 @@
 
 ## 配布候補を作る
 
-OBS 32.2.2、Windows x64、通信1.0を対象とする。1時間の実機結果の必須チェック、音声パケット長、3点以上の非無音波形の相関、およびDLLとソース3ファイルが記録と一致する場合だけ候補を作る。`analysis.json` の `checks.recordedAudioMatchesReference` も真である必要がある。旧形式の解析結果を使う場合は原本を保持し、実波形測定値を再評価した別の証拠を指定する。
+OBS 32.2.2、Windows x64、通信1.0を対象とする。1時間の実機結果の必須チェック、音声パケット長、3点以上の非無音波形の相関、およびDLLとソース4ファイル（Sincヘッダーを含む）が記録と一致する場合だけ候補を作る。開始・終了の受信補間方式も照合する。`analysis.json` の `checks.recordedAudioMatchesReference` も真である必要がある。
 ソースは明示リストから取得し、録画、環境、認証設定、SDK checkout、build成果物をソースZIPへ混ぜない。
 
 ```powershell

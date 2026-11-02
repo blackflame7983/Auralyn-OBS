@@ -12,14 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_FILES = [
     '.gitattributes', '.gitignore', 'AGENTS.md', 'CMakeLists.txt', 'LICENSE', 'NOTICE.md', 'README.md',
     'protocol.lock.json', 'protocol/OBS_PCM_V1.md', 'protocol/obs-pcm-v1.json',
-    'src/audio_clock.hpp', 'src/pcm.hpp', 'src/plugin.cpp', 'tests/obs_smoke.cpp', 'tests/pcm_tests.cpp',
+    'src/audio_clock.hpp', 'src/pcm.hpp', 'src/sinc48.hpp', 'src/plugin.cpp', 'tests/obs_smoke.cpp', 'tests/pcm_tests.cpp',
     'tools/verify_protocol.py', 'tools/smoke.py', 'tools/native_acceptance.py', 'tools/native_support.py',
     'tools/obs_client.mjs', 'tools/analyze_native.py', 'tools/native_scenarios.py', 'tools/native_host_modes.py',
     'tools/native_host_session.py', 'tools/native_ui_soak.py', 'tools/scan_stress.py', 'tools/package_plugin.py', 'tools/manage_install.py',
     'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'tests/test_pcm_quality.py',
-    'tools/pcm_quality.py', 'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md', 'docs/PCM_QUALITY_VALIDATION_20261103.md',
+    'tools/pcm_quality.py', 'tools/native_clock_trial.py', 'tests/test_native_clock_trial.py',
+    'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md', 'docs/PCM_QUALITY_VALIDATION_20261103.md',
 ]
-COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp']
+COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp', 'src/sinc48.hpp']
 BINARY_NAME = 'auralyn-obs.dll'
 OBS_SDK_COMMIT = 'ba2f32bdf791005443988a4955e963663e16b1ed'
 
@@ -125,6 +126,9 @@ def check_evidence(files, dll, evidence):
     for key in ['underruns', 'overruns', 'invalid', 'stale', 'resets', 'connections', 'missedLocks', 'clockRebases']:
         if run['finalBridge'][key] != run['baselineBridge'][key]:
             raise ValueError(f'1時間の実機結果で受信状態が変化しています: {key}')
+    interpolation = run['baselineBridge'].get('interpolation')
+    if interpolation not in ('linear-poc', 'sinc48-poc') or run['finalBridge'].get('interpolation') != interpolation:
+        raise ValueError('検証した受信補間方式を一意に確認できません')
     if not isinstance(recorded, dict):
         raise ValueError('実機manifestのfilesが不正です')
     normalized = {}
@@ -147,7 +151,7 @@ def check_evidence(files, dll, evidence):
         raise ValueError('検証した本体実行ファイルを一意に確認できません')
     return {'manifestSha256': digest(evidence_bytes), 'resultSha256': digest(result_bytes),
             'analysisSha256': digest(analysis_bytes), 'elapsedSeconds': run['elapsedSeconds'],
-            'hostExecutableSha256': engines[0]}
+            'hostExecutableSha256': engines[0], 'receiverInterpolation': interpolation}
 
 
 def check_protocol(files, lock):
@@ -190,8 +194,9 @@ def package(output, evidence, version):
         'sourceArchiveSha256': digest(source), 'binarySha256': digest(dll),
         'sourceFilesSha256': {name: digest(data) for name, data in sorted(files.items())},
         'nativeEvidence': verified_evidence,
+        'receiverInterpolation': verified_evidence['receiverInterpolation'],
         'verifiedCompileSources': COMPILED_SOURCE,
-        'provenanceLimit': 'The DLL and three plugin source files match the native-run manifest; full build input provenance and release source obligations remain to be reviewed.',
+        'provenanceLimit': 'The DLL and four plugin source files match the native-run manifest, with interpolation identity recorded; full build input provenance and release source obligations remain to be reviewed.',
     }
     source_notice = (f'Local, unpublished source snapshot: {source_name}\nSHA-256: {digest(source)}\n'
                      f'OBS SDK: https://github.com/obsproject/obs-studio at {lock["obsCommit"]}\n'
