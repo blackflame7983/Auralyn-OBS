@@ -1,0 +1,9 @@
+{
+  "magic": 1096110147, "major": 1, "minor": 0,
+  "mappingBytes": 196672, "capacity": 16384, "headerWords": 16, "slotWords": 3,
+  "frames": [
+    { "frame": 0, "slotWord": 16, "tag": 0, "leftBits": 1048576000, "rightBits": 3196059648 },
+    { "frame": 16384, "slotWord": 16, "tag": 32768, "leftBits": 1065353216, "rightBits": 3212836864 },
+    { "frame": 4294967295, "slotWord": 49165, "tag": 4294967294, "leftBits": 0, "rightBits": 0 }
+  ]
+}

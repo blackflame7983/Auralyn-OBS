@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "protocol": "Auralyn OBS PCM",
+  "major": 1,
+  "minor": 0,
+  "canonicalRepository": "https://github.com/blackflame7983/Auralyn",
+  "canonicalPath": "docs/protocols/OBS_PCM_V1.md",
+  "auralynBaseCommit": "a69c75d3de15f5b3f8f8ab09def8b8b2b1f50a26",
+  "obsVersion": "32.2.2",
+  "obsCommit": "ba2f32bdf791005443988a4955e963663e16b1ed",
+  "snapshotSha256": "0d45cb7dbbf78421547c984e5252fcdc4728e7acd9b261a0a0dc535ea538a20b",
+  "fixtureSha256": "75cf3b2f49307069d4c43ae2a83dd24474ff7e88f34e9f2a5ac21d5c5b0ab787",
+  "hashNormalization": "UTF-8 without BOM, LF newlines"
+}
