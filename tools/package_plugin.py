@@ -19,6 +19,7 @@ SOURCE_FILES = [
     'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'tests/test_pcm_quality.py',
     'tools/pcm_quality.py', 'tools/native_clock_trial.py', 'tests/test_native_clock_trial.py',
     'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md', 'docs/PCM_QUALITY_VALIDATION_20261103.md',
+    'docs/SINC48_VALIDATION_20261103.md',
 ]
 COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp', 'src/sinc48.hpp']
 BINARY_NAME = 'auralyn-obs.dll'

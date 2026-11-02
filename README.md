@@ -11,7 +11,7 @@ Windows x64 / OBS 32.2.2専用の音声ソース。GPL-3.0-only。本体の加�
 この作業ツリーでは `-DAURALYN_SINC48_POC=ON` の検証用ビルドで、48kHz→48kHzだけを128 tap/256相のSinc補間へ切り替えられる。
 既定OFF。他のrateは線形補間のまま。係数・scratchはSource生成時に用意し、render中の確保・解放・係数再生成は行わない。
 prime時は過去63 frameの履歴も新しい世代から揃え、未来64 frameをqueue内で参照する。これらを物理的な総遅延の実測値とは扱わない。
-同じ入力による比較は `build/quality-final/`。実機の1時間合格は新しいDLLで別に判定する。
+同じ入力による比較は `build/quality-final/`。新DLLの実機1時間は [検証記録](docs/SINC48_VALIDATION_20261103.md) に残す。聴感・他rate・一般配布の受入は別に判定する。
 
 ```powershell
 cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64 -DAURALYN_SINC48_POC=ON
