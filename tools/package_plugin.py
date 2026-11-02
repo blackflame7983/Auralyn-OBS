@@ -16,7 +16,8 @@ SOURCE_FILES = [
     'tools/verify_protocol.py', 'tools/smoke.py', 'tools/native_acceptance.py', 'tools/native_support.py',
     'tools/obs_client.mjs', 'tools/analyze_native.py', 'tools/native_scenarios.py', 'tools/native_host_modes.py',
     'tools/native_host_session.py', 'tools/native_ui_soak.py', 'tools/scan_stress.py', 'tools/package_plugin.py', 'tools/manage_install.py',
-    'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md',
+    'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'tests/test_pcm_quality.py',
+    'tools/pcm_quality.py', 'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md', 'docs/PCM_QUALITY_VALIDATION_20261103.md',
 ]
 COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp']
 BINARY_NAME = 'auralyn-obs.dll'

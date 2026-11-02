@@ -5,11 +5,13 @@
 #endif
 #include <cassert>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -110,7 +112,85 @@ void clocks(uint32_t rate, double ppm, size_t seconds) {
     assert(reader.stats.max_queued < rate / 10);
     std::cout << "clock rate=" << rate << " ppm=" << ppm << " queue=" << reader.stats.min_queued << ".." << reader.stats.max_queued << " correction=" << reader.stats.correction_ppm << " blocks=" << reader.stats.blocks << '\n';
 }
+
+// 実Readerへ同じデジタル入力を渡すオフライン測定。実時間・実機・聴感の受入ではない。
+void quality(const std::filesystem::path &input, const std::filesystem::path &output, double ppm) {
+    if (!std::isfinite(ppm) || std::abs(ppm) > 1000) throw std::runtime_error("ppm must be finite and within +/-1000");
+    std::ifstream source(input, std::ios::binary | std::ios::ate);
+    if (!source) throw std::runtime_error("cannot open input f32le");
+    const auto length = std::streamoff(source.tellg());
+    if (length < 4 * 48000 * 8 || length > 300LL * 48000 * 8 || length % 8 != 0)
+        throw std::runtime_error("input must contain 4..300 seconds of stereo 48k f32le");
+    std::vector<float> raw(size_t(length) / sizeof(float));
+    source.seekg(0); source.read(reinterpret_cast<char *>(raw.data()), std::streamsize(length));
+    if (!source || !std::all_of(raw.begin(), raw.end(), [](float x) { return std::isfinite(x); }))
+        throw std::runtime_error("invalid input samples");
+    // 入力の検証後に一度だけ作る。既存の測定を上書きしない。
+    if (!std::filesystem::create_directory(output)) throw std::runtime_error("output directory already exists");
+    auto write_raw = [&](const char *name, const std::vector<float> &samples) {
+        std::ofstream file(output / name, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(samples.data()), std::streamsize(samples.size() * sizeof(float)));
+        if (!file) throw std::runtime_error("cannot write raw measurement");
+    };
+    write_raw("raw-input.f32", raw);
+    Producer producer; auralyn::Reader reader; std::array<float, 1024> left{}, right{};
+    std::vector<float> rendered; rendered.reserve(raw.size() + 4096);
+    std::ofstream timeline(output / "timeline.jsonl");
+    if (!timeline) throw std::runtime_error("cannot write timeline");
+    reader.render(producer.data.data(), left.data(), right.data(), 1024, 48000, 0);
+    uint64_t written = 0, prefill = 0, unavailable = 0, skipped_at_start = 0, next_log = 48000;
+    double produced = 0; bool started = false;
+    for (uint64_t block = 1;; block++) {
+        produced += 1024.0 * (1 + ppm / 1e6);
+        const auto total = uint64_t(produced);
+        if (total > raw.size() / 2) break; // 入力末尾を無音でflushしない。
+        for (; written < total; written++) {
+            uint32_t l, r;
+            std::memcpy(&l, &raw[size_t(written) * 2], 4);
+            std::memcpy(&r, &raw[size_t(written) * 2 + 1], 4);
+            producer.push(l, r);
+        }
+        const auto before = allocations;
+        const bool good = reader.render(producer.data.data(), left.data(), right.data(), 1024, 48000,
+                                        block * 1024 * 1000000000 / 48000);
+        assert(allocations == before);
+        if (good && !started) { skipped_at_start = written - 48000 / 20; started = true; }
+        if (!good) { if (!started) prefill += 1024; else unavailable += 1024; }
+        for (size_t i = 0; i < 1024; i++) { rendered.push_back(left[i]); rendered.push_back(right[i]); }
+        if (block * 1024 >= next_log) {
+            timeline << "{\"seconds\":" << double(block * 1024) / 48000
+                     << ",\"queuedFrames\":" << reader.stats.queued << ",\"correctionPpm\":" << reader.stats.correction_ppm << "}\n";
+            next_log += 48000;
+        }
+    }
+    write_raw("after.f32", rendered);
+    const auto &s = reader.stats;
+    std::ofstream stats(output / "stats.json");
+    stats.precision(12);
+    stats << "{\"model\":\"offline actual OBS Reader; not physical devices or real-time performance\","
+          << "\"sampleRateHz\":48000,\"channels\":2,\"ppm\":" << ppm
+          << ",\"inputFrames\":" << raw.size() / 2 << ",\"outputFrames\":" << rendered.size() / 2
+          << ",\"prefillFrames\":" << prefill << ",\"startupSourceSkippedFrames\":" << skipped_at_start
+          << ",\"unavailableFramesAfterStart\":" << unavailable << ",\"blocks\":" << s.blocks
+          << ",\"underruns\":" << s.underruns << ",\"overruns\":" << s.overruns
+          << ",\"invalid\":" << s.invalid << ",\"stale\":" << s.stale << ",\"resets\":" << s.resets
+          << ",\"correctionPpm\":" << s.correction_ppm << ",\"flushRecorded\":false}\n";
+    timeline.flush(); stats.flush();
+    if (!timeline || !stats || !started || unavailable || s.underruns || s.overruns || s.invalid || s.stale)
+        throw std::runtime_error("offline transport measurement failed; retain evidence");
+}
+
 int main(int argc, char **argv) {
+    if (argc == 5 && std::string(argv[1]) == "--quality") {
+        try {
+            size_t parsed = 0; const std::string value(argv[4]); const double ppm = std::stod(value, &parsed);
+            if (parsed != value.size()) throw std::runtime_error("invalid ppm argument");
+            quality(argv[2], argv[3], ppm); return 0;
+        } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
+    }
+    if (argc != 1 && !(argc == 2 && std::string(argv[1]) == "--long")) {
+        std::cerr << "Usage: pcm_tests [--long | --quality input.f32 new-output-directory ppm]\n"; return 2;
+    }
     const size_t seconds = argc == 2 && std::string(argv[1]) == "--long" ? 3600 : 120;
     fixture(); failures();
     for (uint32_t rate : {44100u,48000u,96000u}) {

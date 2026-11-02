@@ -8,6 +8,24 @@ Windows x64 / OBS 32.2.2専用の音声ソース。GPL-3.0-only。本体の加�
 このリポジトリにはリモート・公開Release・インストーラーはまだない。通常OBSへの自動導入、設定変更、マイク取得、録画、配信は行わない。
 試作の線形補間は音質を受入済みではなく、OBSの他の版との互換性も宣言しない。
 
+## 受信処理だけのオフライン音質測定
+
+実機の長時間録画とは別に、`pcm_tests --quality` でDLLと同じ `Reader` をheap上のデータへ適用できる。
+共有メモリIPC・実OBSアプリ・実時間性能の試験ではない。入力はstereo 48kHz f32leの4〜300秒、出力先は未作成のディレクトリに限定する。
+raw前後・統計・時系列を残し、解析ではhash、波形/PSD、100/1000/10000/19000Hzの帯域内のレベル比と音量を揃えた試聴WAVを保存する。
+帯域幅±80Hzにはclock補正の周波数変動も含める。固定周波数からのズレを歪率やSNRとして扱わない。起動時の待機と入力先頭のskipは別に記録する。
+
+```powershell
+cmake --build build/cmake --config Release --target pcm_tests --parallel 1
+# build/pcm-quality は自分で新規作成する。既存の測定を上書きしない。
+python tools/pcm_quality.py probe --output build/pcm-quality/probe.f32 --seconds 70
+build/cmake/Release/pcm_tests.exe --quality build/pcm-quality/probe.f32 build/pcm-quality/tone-37 37
+python tools/pcm_quality.py analyze --run build/pcm-quality/tone-37 --output build/pcm-quality/tone-37-analysis --executable build/cmake/Release/pcm_tests.exe --probe build/pcm-quality/probe.f32.json
+```
+
+音声素材は同じ入力を各速度差で使う。素材を渡す場合はprobe生成を省き、解析の `--probe` も指定しない。
+transportのmodelが健全でも、音質の採用判断や聴感の合格を自動で付けない。入力・出力ファイルの位置差は物理的な総遅延ではない。
+
 ## ビルド
 
 前提: Windows 11 x64、Visual Studio 2022 C++ Build Tools、Windows SDK、CMake 3.24以上、Git、Python 3、インストール済みOBS 32.2.2。
