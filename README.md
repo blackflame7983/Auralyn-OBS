@@ -2,7 +2,8 @@
 
 Windows x64 / OBS 32.2.2専用の音声ソース。GPL-3.0-only。本体の加工済みstereo PCMを共有メモリから受け取り、OBSの音声周期で消費する。
 本体・プラグイン・通信仕様の版を分け、仕様の正本はAuralynに置く。参照版は `protocol.lock.json`、独立ビルド用スナップショットは `protocol/`。
-本体の基点commitだけでは未コミットの試作コードを再現できない。現段階では両作業ツリーを一組として確認する。
+本体とプラグインはローカルcommitで区切り、実機で使った実行ファイルとソースのSHA-256を一組として確認する。
+`auralynBaseCommit` は通信仕様を参照したcommitであり、検証に使った本体実行ファイルや正式な最低対応版を表さない。
 
 このリポジトリにはリモート・公開Release・インストーラーはまだない。通常OBSへの自動導入、設定変更、マイク取得、録画、配信は行わない。
 試作の線形補間は音質を受入済みではなく、OBSの他の版との互換性も宣言しない。
@@ -47,6 +48,7 @@ src-tauri/target/debug/examples/obs_pcm_sender.exe issue223 10 48000 500
 通常の `obs-source` 機能は保存設定を使う。旧 `obs-bridge-poc` featureと `AURALYN_OBS_POC_ENDPOINT=issue223` は、単体engineの検証ハーネスの互換用に残している。
 試作エンジンを通常の配布用sidecarへ上書きせず、実デバイス確認は隔離したHost/sidecarを用意して行う。
 ローカル配布候補の生成、隔離portableへの導入・更新・復帰・削除は [導入手順](docs/INSTALL.md)を参照する。公開Releaseや通常OBSへの自動導入は用意していない。
+一般配布に進むための残件は [配布準備](docs/DISTRIBUTION_READINESS.md) を参照する。
 
 ## 実共有メモリと実libobsの到達確認
 

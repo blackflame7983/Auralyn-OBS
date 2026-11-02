@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import re
+import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +16,7 @@ SOURCE_FILES = [
     'tools/verify_protocol.py', 'tools/smoke.py', 'tools/native_acceptance.py', 'tools/native_support.py',
     'tools/obs_client.mjs', 'tools/analyze_native.py', 'tools/native_scenarios.py', 'tools/native_host_modes.py',
     'tools/native_host_session.py', 'tools/native_ui_soak.py', 'tools/scan_stress.py', 'tools/package_plugin.py', 'tools/manage_install.py',
-    'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'docs/INSTALL.md',
+    'tests/test_package_install.py', 'tests/test_native_acceptance.py', 'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md',
 ]
 COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp']
 BINARY_NAME = 'auralyn-obs.dll'
@@ -50,6 +51,32 @@ def read_sources():
             raise ValueError(f'許可したソースがありません: {name}')
         result[name] = path.read_bytes()
     return result
+
+
+def source_revision(files):
+    """親repositoryのcommitや、変更済みsnapshotをclean sourceと表示しない。"""
+    unversioned = {'commit': None, 'state': 'unversioned-source-snapshot'}
+    def git_bytes(*args):
+        return subprocess.run(['git', '-C', str(ROOT), *args], capture_output=True,
+                              check=True, timeout=10).stdout
+    def git(*args):
+        return git_bytes(*args).decode('utf-8').strip()
+    try:
+        if Path(git('rev-parse', '--show-toplevel')).resolve() != ROOT.resolve():
+            return unversioned
+        commit = git('rev-parse', 'HEAD')
+        if not re.fullmatch('[a-f0-9]{40}', commit):
+            return unversioned
+        tracked = set(git('ls-files', '-z').split('\0'))
+        clean = not git('status', '--porcelain=v1', '--untracked-files=normal') and set(files) <= tracked
+        if clean:
+            # 明示リストはすべてtext。読み取り後にcommitされた場合も、archiveと別commitを結び付けない。
+            clean = all(data.replace(b'\r\n', b'\n') == git_bytes('show', f'{commit}:{name}').replace(b'\r\n', b'\n')
+                        for name, data in files.items())
+            clean = clean and git('rev-parse', 'HEAD') == commit and not git('status', '--porcelain=v1', '--untracked-files=normal')
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, UnicodeError):
+        return unversioned
+    return {'commit': commit, 'state': 'clean-checkout-snapshot' if clean else 'commit-plus-working-tree-snapshot'}
 
 
 def check_evidence(files, dll, evidence):
@@ -97,7 +124,16 @@ def check_evidence(files, dll, evidence):
     for key in ['underruns', 'overruns', 'invalid', 'stale', 'resets', 'connections', 'missedLocks', 'clockRebases']:
         if run['finalBridge'][key] != run['baselineBridge'][key]:
             raise ValueError(f'1時間の実機結果で受信状態が変化しています: {key}')
-    normalized = {key.replace('\\', '/').lower(): value for key, value in recorded.items()}
+    if not isinstance(recorded, dict):
+        raise ValueError('実機manifestのfilesが不正です')
+    normalized = {}
+    for key, value in recorded.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not re.fullmatch('[a-f0-9]{64}', value):
+            raise ValueError('実機manifestのファイルSHA-256が不正です')
+        path = key.replace('\\', '/').lower()
+        if path in normalized:
+            raise ValueError('実機manifestに表記の異なる重複パスがあります')
+        normalized[path] = value
     for name in COMPILED_SOURCE:
         key = str(ROOT / name).replace('\\', '/').lower()
         if normalized.get(key) != digest(files[name]):
@@ -105,8 +141,12 @@ def check_evidence(files, dll, evidence):
     matches = [value for key, value in normalized.items() if key.endswith('/obs-plugins/64bit/auralyn-obs.dll')]
     if len(matches) != 1 or matches[0] != digest(dll):
         raise ValueError('実機検証時のDLLと不一致')
+    engines = [value for key, value in normalized.items() if key.endswith('/audio_engine.exe')]
+    if len(engines) != 1 or not isinstance(engines[0], str) or not re.fullmatch('[a-f0-9]{64}', engines[0]):
+        raise ValueError('検証した本体実行ファイルを一意に確認できません')
     return {'manifestSha256': digest(evidence_bytes), 'resultSha256': digest(result_bytes),
-            'analysisSha256': digest(analysis_bytes), 'elapsedSeconds': run['elapsedSeconds']}
+            'analysisSha256': digest(analysis_bytes), 'elapsedSeconds': run['elapsedSeconds'],
+            'hostExecutableSha256': engines[0]}
 
 
 def check_protocol(files, lock):
@@ -135,6 +175,7 @@ def package(output, evidence, version):
     lock = json.loads(files['protocol.lock.json'])
     check_protocol(files, lock)
     source = zip_bytes(files)
+    revision = source_revision(files)
     stem = 'auralyn-obs-' + version
     source_name = stem + '-source.zip'
     binary_name = stem + '-windows-x64.zip'
@@ -143,8 +184,8 @@ def package(output, evidence, version):
         'license': 'GPL-3.0-only', 'platform': 'windows-x64', 'obsVersion': lock['obsVersion'],
         'obsSdkCommit': lock['obsCommit'], 'protocolMajor': lock['major'], 'protocolMinor': lock['minor'],
         'sourceKind': 'auralyn_pcm_poc_v1', 'auralynBaseCommit': lock['auralynBaseCommit'],
-        'auralynState': 'base-commit-plus-uncommitted-sender', 'minimumAuralynVersion': None,
-        'sourceState': 'uncommitted-working-tree-snapshot', 'sourceArchive': source_name,
+        'auralynState': 'protocol-base-only; tested sender identified by native evidence', 'minimumAuralynVersion': None,
+        'sourceState': revision['state'], 'pluginSourceCommit': revision['commit'], 'sourceArchive': source_name,
         'sourceArchiveSha256': digest(source), 'binarySha256': digest(dll),
         'sourceFilesSha256': {name: digest(data) for name, data in sorted(files.items())},
         'nativeEvidence': verified_evidence,
@@ -153,7 +194,8 @@ def package(output, evidence, version):
     }
     source_notice = (f'Local, unpublished source snapshot: {source_name}\nSHA-256: {digest(source)}\n'
                      f'OBS SDK: https://github.com/obsproject/obs-studio at {lock["obsCommit"]}\n'
-                     'This local snapshot is uncommitted; it is not evidence of a public release.\n').encode()
+                     f'Plugin source commit: {revision["commit"] or "unversioned"}\nSource state: {revision["state"]}\n'
+                     'Local unpublished candidate; full release source obligations remain to be reviewed.\n').encode()
     binary = zip_bytes({'manifest.json': json_bytes(manifest), BINARY_NAME: dll,
                         'LICENSE': files['LICENSE'], 'NOTICE.md': files['NOTICE.md'], 'SOURCE.txt': source_notice})
     output.mkdir(parents=True, exist_ok=False)

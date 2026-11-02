@@ -39,7 +39,15 @@ class PackageInstallTests(unittest.TestCase):
         build = (ROOT / 'build').resolve(strict=True)
         resolved = self.folder.resolve(strict=True)
         if resolved != build and resolved.is_relative_to(build):
-            shutil.rmtree(resolved)
+            def readonly_object(function, path, error):
+                # WindowsのGit objectだけがread-onlyで残る場合も、所有fixture内だけを扱う。
+                target = Path(path).resolve(strict=True)
+                if (not isinstance(error, PermissionError) or function not in (os.unlink, os.remove)
+                        or not target.is_file() or not target.is_relative_to(resolved)):
+                    raise error
+                target.chmod(stat.S_IREAD | stat.S_IWRITE)
+                function(path)
+            shutil.rmtree(resolved, onexc=readonly_object)
 
     def make_zip(self, name, data, version, *, extra=None, symlink=False):
         path = self.folder / name
@@ -61,6 +69,39 @@ class PackageInstallTests(unittest.TestCase):
 
     def contents(self):
         return {str(p.relative_to(self.root)): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+
+    def test_source_revision_distinguishes_clean_modified_and_untracked_files(self):
+        repo = self.folder / 'source'
+        repo.mkdir()
+        def git(*args):
+            return subprocess.run(['git', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + str(repo / 'no-hooks'),
+                                   '-c', 'user.name=Local Test', '-c', 'user.email=local-test@example.invalid',
+                                   '-C', str(repo), *args], capture_output=True, check=True).stdout.decode().strip()
+        git('init', '-q')
+        (repo / 'demo.py').write_bytes(b'one\n')
+        git('add', 'demo.py')
+        git('commit', '-qm', 'test fixture')
+        commit = git('rev-parse', 'HEAD')
+        with mock.patch.object(package, 'ROOT', repo):
+            self.assertEqual(package.source_revision({'demo.py': b'one\n'}),
+                             {'commit': commit, 'state': 'clean-checkout-snapshot'})
+            self.assertEqual(package.source_revision({'demo.py': b'another snapshot\n'})['state'],
+                             'commit-plus-working-tree-snapshot')
+            (repo / 'demo.py').write_bytes(b'changed source\n')
+            self.assertEqual(package.source_revision({'demo.py': b'changed source\n'})['state'],
+                             'commit-plus-working-tree-snapshot')
+            git('add', 'demo.py')
+            git('commit', '-qm', 'changed fixture')
+            (repo / 'extra.py').write_bytes(b'untracked\n')
+            self.assertEqual(package.source_revision({'demo.py': b'changed source\n'})['state'],
+                             'commit-plus-working-tree-snapshot')
+
+    def test_export_does_not_inherit_parent_repository_commit(self):
+        export = self.folder / 'export'
+        export.mkdir()
+        with mock.patch.object(package, 'ROOT', export):
+            self.assertEqual(package.source_revision({}),
+                             {'commit': None, 'state': 'unversioned-source-snapshot'})
 
     def test_preview_install_idempotent_update_restore_remove_and_preservation(self):
         root = install.isolated_root(self.root)
@@ -286,6 +327,23 @@ class PackageInstallTests(unittest.TestCase):
             mutate(candidate)
             with self.subTest(mutation=mutate), self.assertRaises(ValueError):
                 check(candidate)
+        manifest_path = self.folder / 'code-manifest.json'
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        engine_key = next(key for key in manifest['files'] if key.lower().endswith('audio_engine.exe'))
+        for mode in ['missing', 'invalid', 'ambiguous', 'case-alias', 'invalid-alias']:
+            candidate = copy.deepcopy(manifest)
+            if mode == 'missing':
+                candidate['files'].pop(engine_key)
+            elif mode == 'invalid':
+                candidate['files'][engine_key] = 'not-a-sha256'
+            elif mode == 'ambiguous':
+                candidate['files']['other/audio_engine.exe'] = candidate['files'][engine_key]
+            else:
+                alias = engine_key.replace('\\', '/').swapcase()
+                candidate['files'][alias] = 'a' * 64 if mode == 'case-alias' else 'not-a-sha256'
+            manifest_path.write_text(json.dumps(candidate), encoding='utf-8')
+            with self.subTest(host=mode), self.assertRaises(ValueError):
+                check(valid)
 
     def test_real_process_lock_and_recovery_after_forced_termination(self):
         root = install.isolated_root(self.root)
