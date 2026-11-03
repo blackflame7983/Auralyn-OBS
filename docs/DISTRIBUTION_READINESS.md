@@ -35,7 +35,11 @@ OBS全体の再ビルド入力や正式配布用の対応ソース充足は、�
 ## 導入と署名
 
 [OBS公式の導入案内](https://obsproject.com/kb/plugins-guide)が推奨するWindowsの配置はProgramData配下のplugin別ディレクトリ。
-現在の管理ツールは検証用マーカー付きportable OBSだけを対象とする。ProgramDataへの導入検証にはならない。
+管理ツールは検証用マーカー付きportable OBSと、`build`内のProgramData形式の隔離配置だけを対象とする。
+後者ではDLLの配置・更新・復元・削除・中断復旧を試すが、実際のProgramDataの権限や通常OBSへの導入検証にはならない。
+手順は [ProgramData形式の隔離配置](PROGRAMDATA_SANDBOX.md) を参照する。
+通常版の手動ZIP構成と退避・復帰は [導入候補の手順](MANUAL_INSTALL_CANDIDATE.md) にまとめる。
+同形式の実ZIPを隔離配置で一巡させる `validate_manual_package.py` は、実ProgramDataへ書き込まない。
 
 - 通常OBSの導入先を利用者が確認できるインストーラーまたは手動ZIP構成を決める。
 - 既存DLLの競合、OBS起動中、権限不足、更新・旧版への復帰・削除・中断復旧を、その配置で検証する。
@@ -52,4 +56,5 @@ OBS全体の再ビルド入力や正式配布用の対応ソース充足は、�
 
 96→48kHz変換は [専用記録](SINC96_VALIDATION_20261103.md) に残す。既存48kHz DLLの1時間を新DLLへ転用しない。
 88.2／176.4／192kHzの追加は [追加rateの記録](EXTENDED_RATES_VALIDATION_20261103.md) に分ける。過去の96kHz DLLの1時間や短い合成試験だけで、新DLLの公開ゲートを通さない。
+同じ追加rate DLLの実ASIO 96→48kHzは、後続の1時間回帰で14項目成功した。宣言範囲はその条件に限り、追加3rateの実デバイスや通常OBSへの導入を合格にしない。
 実ASIOの合成信号・OTT・OBSの成立と、利用者の発声・音楽の試聴・映像同期は区別する。

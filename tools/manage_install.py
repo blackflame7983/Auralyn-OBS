@@ -1,4 +1,4 @@
-"""build配下の隔離portable OBSだけで導入・更新・復帰・削除を試す。"""
+"""build配下の隔離レイアウトで導入・更新・復帰・削除を試す。"""
 import argparse
 from contextlib import contextmanager
 import json
@@ -13,6 +13,9 @@ from package_plugin import BINARY_NAME, ROOT, digest, json_bytes
 
 MARKER = '.auralyn-obs-isolated-test'
 MARKER_CONTENT = 'Auralyn OBS isolated portable test only\n'
+PROGRAMDATA_MARKER = '.auralyn-obs-programdata-sandbox'
+PROGRAMDATA_MARKER_CONTENT = 'Auralyn OBS isolated ProgramData layout test only\n'
+PROGRAMDATA_SUFFIX = ('ProgramData', 'obs-studio', 'plugins', 'auralyn-obs')
 MANIFEST = '.auralyn-obs-install.json'
 JOURNAL = '.auralyn-obs-transaction.json'
 LOCK = '.auralyn-obs-install.lock'
@@ -37,11 +40,25 @@ def plain_path(root, relative):
     return path
 
 
-def isolated_root(value):
+def dll_target(root, layout='portable'):
+    if layout == 'portable':
+        return plain_path(root, 'obs-plugins/64bit/' + BINARY_NAME)
+    if layout == 'programdata-sandbox':
+        return plain_path(root, 'bin/64bit/' + BINARY_NAME)
+    raise ValueError('レイアウトが不正です')
+
+
+def isolated_root(value, layout='portable'):
+    if layout not in ('portable', 'programdata-sandbox'):
+        raise ValueError('レイアウトが不正です')
     build_path = ROOT / 'build'
-    info = build_path.lstat()
-    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
-        raise ValueError('buildのシンボリックリンクや再解析ポイントは使えません')
+    # buildまでの祖先を含め、junction経由の別領域を許可しない。
+    ancestor = Path(build_path.anchor)
+    for part in build_path.parts[1:]:
+        ancestor = ancestor / part
+        info = ancestor.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('buildへのシンボリックリンクや再解析ポイントは使えません')
     build = build_path.resolve(strict=True)
     requested = value.absolute()
     if requested == build or not requested.is_relative_to(build):
@@ -50,6 +67,19 @@ def isolated_root(value):
     root = plain_path(build, requested.relative_to(build)).resolve(strict=True)
     if not root.is_dir():
         raise ValueError('隔離portable OBSのrootはディレクトリを指定してください')
+    if layout == 'programdata-sandbox':
+        if tuple(root.parts[-len(PROGRAMDATA_SUFFIX):]) != PROGRAMDATA_SUFFIX:
+            raise ValueError('ProgramData隔離rootのディレクトリ構成が不正です')
+        marker = plain_path(root, PROGRAMDATA_MARKER)
+        if plain_path(root, MARKER).exists() or plain_path(root, 'portable_mode.txt').exists():
+            raise ValueError('portableとProgramData隔離のマーカーは混在できません')
+        if not plain_path(root, 'bin/64bit').is_dir():
+            raise ValueError('隔離プラグインのbin/64bitが必要です')
+        if not marker.is_file() or marker.read_text(encoding='utf-8') != PROGRAMDATA_MARKER_CONTENT:
+            raise ValueError('ProgramData隔離対象の明示マーカーを確認できません')
+        return root
+    if plain_path(root, PROGRAMDATA_MARKER).exists():
+        raise ValueError('portableとProgramData隔離のマーカーは混在できません')
     for name in ['portable_mode.txt', 'bin/64bit/obs64.exe', 'obs-plugins/64bit', MARKER]:
         path = plain_path(root, name)
         if not path.exists():
@@ -100,8 +130,8 @@ def load_package(path):
     return manifest, dll
 
 
-def current(root):
-    target = plain_path(root, 'obs-plugins/64bit/' + BINARY_NAME)
+def current(root, layout='portable'):
+    target = dll_target(root, layout)
     info = plain_path(root, MANIFEST)
     if not target.exists() and not info.exists():
         return None, None
@@ -182,7 +212,7 @@ def atomic_write(path, data):
             temporary.unlink()
 
 
-def plan(root, action, package=None, backup_sha=None):
+def plan(root, action, package=None, backup_sha=None, layout='portable'):
     journal = plain_path(root, JOURNAL)
     if action != 'recover' and journal.exists():
         raise ValueError('中断した操作があります。recoverを先にプレビューしてください')
@@ -207,7 +237,7 @@ def plan(root, action, package=None, backup_sha=None):
         for sha in [saved['beforeSha256'], saved['afterSha256']]:
             if sha is not None and (not isinstance(sha, str) or not HASH.fullmatch(sha)):
                 raise ValueError('復旧先の情報が不正です')
-        target = plain_path(root, 'obs-plugins/64bit/' + BINARY_NAME)
+        target = dll_target(root, layout)
         if target.exists():
             if not target.is_file() or digest(target.read_bytes()) not in [saved['beforeSha256'], saved['afterSha256']]:
                 raise ValueError('中断後にDLLが変更されています')
@@ -217,7 +247,7 @@ def plan(root, action, package=None, backup_sha=None):
             if existing['binarySha256'] not in [saved['beforeSha256'], saved['afterSha256']]:
                 raise ValueError('中断後に管理情報が変更されています')
         return before, data, {'action': action, 'beforeSha256': saved['beforeSha256'], 'afterSha256': saved['afterSha256']}
-    old, old_data = current(root)
+    old, old_data = current(root, layout)
     if action == 'install':
         if package is None:
             raise ValueError('配布候補ZIPを指定してください')
@@ -236,8 +266,8 @@ def plan(root, action, package=None, backup_sha=None):
     return (old, old_data, new, data), None, preview
 
 
-def restore_before(root, before, data):
-    target = plain_path(root, 'obs-plugins/64bit/' + BINARY_NAME)
+def restore_before(root, before, data, layout='portable'):
+    target = dll_target(root, layout)
     metadata = plain_path(root, MANIFEST)
     if before is None:
         if target.exists(): target.unlink()
@@ -274,17 +304,17 @@ def operation_lock(root):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def apply(root, action, package=None, backup_sha=None):
+def apply(root, action, package=None, backup_sha=None, layout='portable'):
     with operation_lock(root):
         if action == 'recover':
-            before, data, preview = plan(root, action)
-            restore_before(root, before, data)
+            before, data, preview = plan(root, action, layout=layout)
+            restore_before(root, before, data, layout)
             plain_path(root, JOURNAL).unlink()
             return preview
-        (old, old_data, new, data), _, preview = plan(root, action, package, backup_sha)
+        (old, old_data, new, data), _, preview = plan(root, action, package, backup_sha, layout)
         if preview['unchanged']:
             return preview
-        target = plain_path(root, 'obs-plugins/64bit/' + BINARY_NAME)
+        target = dll_target(root, layout)
         metadata = plain_path(root, MANIFEST)
         journal = plain_path(root, JOURNAL)
         if old is not None:
@@ -296,7 +326,7 @@ def apply(root, action, package=None, backup_sha=None):
         journal_bytes = json_bytes(entry)
         exclusive_write(journal, journal_bytes)
         try:
-            if current(root) != (old, old_data):
+            if current(root, layout) != (old, old_data):
                 raise ValueError('プレビュー後に管理対象が変更されました')
         except BaseException:
             if journal.is_file() and journal.read_bytes() == journal_bytes:
@@ -312,8 +342,8 @@ def apply(root, action, package=None, backup_sha=None):
             journal.unlink()
         except BaseException:
             # 外部変更があれば上書きせず、journalとbackupを残す。
-            before, previous_data, _ = plan(root, 'recover')
-            restore_before(root, before, previous_data)
+            before, previous_data, _ = plan(root, 'recover', layout=layout)
+            restore_before(root, before, previous_data, layout)
             journal.unlink()
             raise
         return preview
@@ -323,16 +353,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['install', 'restore', 'remove', 'recover'])
     parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--layout', choices=['portable', 'programdata-sandbox'], default='portable')
     parser.add_argument('--package', type=Path)
     parser.add_argument('--backup', help='SHA-256 of previous DLL')
     parser.add_argument('--apply', action='store_true', help='Apply the previewed operation')
     args = parser.parse_args()
     try:
-        root = isolated_root(args.root)
+        root = isolated_root(args.root, args.layout)
         if args.apply:
-            result = apply(root, args.action, args.package, args.backup)
+            result = apply(root, args.action, args.package, args.backup, args.layout)
         else:
-            _, _, result = plan(root, args.action, args.package, args.backup)
+            _, _, result = plan(root, args.action, args.package, args.backup, args.layout)
         print(json.dumps({'preview': not args.apply, **result}, ensure_ascii=False, indent=2))
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, json.JSONDecodeError) as error:
         parser.exit(1, f'操作できません: {error}\n')

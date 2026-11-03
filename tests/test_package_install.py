@@ -277,6 +277,98 @@ class PackageInstallTests(unittest.TestCase):
         self.assertEqual(self.other.read_bytes(), b'other plugin data')
         self.assertFalse((root / install.JOURNAL).exists())
 
+    def programdata_root(self):
+        root = self.folder / 'ProgramData/obs-studio/plugins/auralyn-obs'
+        (root / 'bin/64bit').mkdir(parents=True)
+        (root / install.PROGRAMDATA_MARKER).write_text(install.PROGRAMDATA_MARKER_CONTENT, encoding='utf-8', newline='\n')
+        return root
+
+    def test_programdata_sandbox_lifecycle_conflicts_and_permissions(self):
+        layout = 'programdata-sandbox'
+        root = install.isolated_root(self.programdata_root(), layout)
+        target = root / 'bin/64bit/auralyn-obs.dll'
+        other = root / 'bin/64bit/unrelated.dll'
+        other.write_bytes(b'other')
+        _, _, preview = install.plan(root, 'install', self.a, layout=layout)
+        self.assertIsNone(preview['before'])
+        self.assertFalse(target.exists())
+        install.apply(root, 'install', self.a, layout=layout)
+        first = install.current(root, layout)[0]
+        self.assertTrue(install.apply(root, 'install', self.a, layout=layout)['unchanged'])
+        install.apply(root, 'install', self.b, layout=layout)
+        install.apply(root, 'restore', backup_sha=first['binarySha256'], layout=layout)
+        self.assertEqual(install.current(root, layout)[0], first)
+        target.write_bytes(b'foreign')
+        for action in ('install', 'remove', 'restore'):
+            with self.assertRaises(ValueError):
+                install.apply(root, action, self.b, first['binarySha256'], layout)
+        self.assertEqual(target.read_bytes(), b'foreign')
+        target.write_bytes(b'MZ-test-version-a')
+        original = install.atomic_write
+        def locked(path, data):
+            if path == target:
+                raise PermissionError('simulated locked DLL')
+            return original(path, data)
+        with mock.patch.object(install, 'atomic_write', side_effect=locked):
+            with self.assertRaises(PermissionError):
+                install.apply(root, 'install', self.b, layout=layout)
+        self.assertEqual(install.current(root, layout)[0], first)
+        self.assertFalse((root / install.JOURNAL).exists())
+        with mock.patch.object(install, 'exclusive_write', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                install.apply(root, 'remove', layout=layout)
+        self.assertEqual(install.current(root, layout)[0], first)
+        install.apply(root, 'remove', layout=layout)
+        self.assertFalse(target.exists())
+        self.assertEqual(other.read_bytes(), b'other')
+
+    def test_programdata_sandbox_recovery_and_root_guards(self):
+        layout = 'programdata-sandbox'
+        root = install.isolated_root(self.programdata_root(), layout)
+        target = root / 'bin/64bit/auralyn-obs.dll'
+        install.apply(root, 'install', self.a, layout=layout)
+        before, data = install.current(root, layout)
+        install.backup(root, before, data)
+        after, after_data = install.load_package(self.b)
+        journal = {'schemaVersion': 1, 'beforeManifest': before, 'beforeSha256': before['binarySha256'],
+                   'afterSha256': after['binarySha256']}
+        install.exclusive_write(root / install.JOURNAL, package.json_bytes(journal))
+        target.write_bytes(b'foreign after interruption')
+        with self.assertRaises(ValueError):
+            install.apply(root, 'recover', layout=layout)
+        self.assertTrue((root / install.JOURNAL).exists())
+        target.write_bytes(after_data)
+        result = subprocess.run([sys.executable, str(ROOT / 'tools/manage_install.py'), 'recover',
+                                 '--root', str(root), '--layout', layout, '--apply'], capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertEqual(install.current(root, layout), (before, data))
+        self.assertFalse((root / install.JOURNAL).exists())
+        with self.assertRaises(ValueError):
+            install.isolated_root(self.root, layout)
+        wrong = self.folder / 'wrong-root'
+        (wrong / 'bin/64bit').mkdir(parents=True)
+        (wrong / install.PROGRAMDATA_MARKER).write_text(install.PROGRAMDATA_MARKER_CONTENT, encoding='utf-8', newline='\n')
+        with self.assertRaises(ValueError):
+            install.isolated_root(wrong, layout)
+        with self.assertRaises(ValueError):
+            install.isolated_root(Path(os.environ.get('PROGRAMDATA', 'C:/ProgramData')) / 'obs-studio/plugins/auralyn-obs', layout)
+        marker = root / install.PROGRAMDATA_MARKER
+        marker.write_text('wrong', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            install.isolated_root(root, layout)
+        marker.write_text(install.PROGRAMDATA_MARKER_CONTENT, encoding='utf-8', newline='\n')
+        (root / install.MARKER).write_text(install.MARKER_CONTENT, encoding='utf-8')
+        with self.assertRaises(ValueError):
+            install.isolated_root(root, layout)
+        (root / install.MARKER).unlink()
+        (self.root / install.PROGRAMDATA_MARKER).write_text(install.PROGRAMDATA_MARKER_CONTENT, encoding='utf-8')
+        with self.assertRaises(ValueError):
+            install.isolated_root(self.root)
+        alias_parent = self.folder / 'alias'
+        self.make_directory_link(alias_parent, self.folder / 'ProgramData')
+        with self.assertRaises(ValueError):
+            install.isolated_root(alias_parent / 'obs-studio/plugins/auralyn-obs', layout)
+
     def test_package_uses_matching_fixture_hashes_and_only_allowlisted_source(self):
         evidence = self.synthetic_evidence() / 'code-manifest.json'
         evidence_copy = self.folder / 'evidence'

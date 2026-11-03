@@ -85,4 +85,31 @@ Voicemeeterの実rate96kHz、元のInsert 6/7 ON、AUX mute OFFへの復元、�
 負荷による読取lock取得失敗27回を含むが、出力時刻は進み、異常停止後の無音tailを確認した。これは通常の60秒録画中のエラー増分とは別の試験である。
 
 候補生成は引き続き、そのDLL・補間方式・sourceに対応する1時間の実機証拠を必須とする。短い結合試験を1時間の証拠として受理しない。
-新3rateの実デバイス・ASIO・マイク/VST、利用者の試聴、新DLLの実時間1時間、通常OBS導入と公開は未確認。
+新3rateの実デバイス・ASIO・マイク/VST、利用者の試聴、通常OBS導入と公開は未確認。
+
+## 同じ新DLLの96kHz実ASIO・1時間回帰
+
+追加rateの短時間試験で使用した同一のDLL `c5f3ebee…6709aff` を、別worktree `obs223-readiness-20261103/Auralyn-OBS` に固定して再使用した。
+既存の `build/cmake` には元のビルド記録を取り込み、新しいビルドを行ったとは扱わない。取込元とhashは `build/frozen-import.json` に保持する。
+上記の周波数・短時間試験のrawは従来の `Auralyn-OBS-rates` worktreeに保持し、新しい1時間の証拠と混同しない。
+
+Voicemeeter Insert Virtual ASIOを96kHzで維持し、合成帯域制限noise→WASAPI AUX→実ASIO/OTT→共有メモリ→隔離OBS 32.2.2/48kHzを3600.015秒運転した。
+本体engineのSHA-256は `a61a416fb6d77792ab8764fb80632b668f3aa0e630315505fc4ce46d727b3151`。
+試験用の物理モニターは無音とし、発声・音楽の聴感や映像同期の受入とは分ける。
+
+| 確認 | 結果 |
+| --- | --- |
+| 録音音声 | 3599.9147秒、172,795,904 frame、PCM16 stereo 48kHz |
+| 音声packet | 168,746件、時刻欠損0 |
+| 入力側 | underflow・zero fill・drop・回復処理の増分0 |
+| OBS受信 | underrun/overrun/invalid/stale/reset/lock失敗/clock再初期化/接続変更の増分0 |
+| OBS追加バッファ | 0ms。共有ringの待ち量や物理経路の総遅延が0という意味ではない |
+| 参照・試験信号 | 参照取りこぼし0、再生不足0 |
+| 波形 | 初回の固定比率・小数sample位置補間で9窓すべて一致、最小相関0.9993721。事後affine解析は未使用 |
+| 保存と復元 | 凍結23ファイルは収録終了まで不変、補足7ファイルも途中の観測値から終了まで不変。通常OBS設定を保持し、Voicemeeterの元のpatch/muteへ復元、cleanup errorなし |
+
+解析は14/14項目成功。全時間の波形の完全一致、実配信のGPU/encoder負荷、他rateの実機1時間を保証しない。
+証拠は当該worktreeの `build/native-20261103-190908/runs/clock-off-20261103-190922/` に保持する。
+補足manifestは運転途中の追加観測であり、元の開始時manifestへ書き戻していない。
+後続のCargo検証でtargetを再使用する前に、凍結一致のreceiptを保存し、試験済みengineを別の `build/frozen-runtime-for-acceptance/` に同一hashで保持した。
+後の再ビルドexeや別条件へ、この1時間の合格を転用しない。
