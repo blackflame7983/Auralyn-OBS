@@ -13,7 +13,7 @@ import numpy as np
 
 
 def runtime_env():
-    names={'PATH','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','USERPROFILE',
+    names={'PATH','SYSTEMROOT','SYSTEMDRIVE','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','USERPROFILE',
            'APPDATA','LOCALAPPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','PROGRAMW6432','ALLUSERSPROFILE'}
     return {k:v for k,v in os.environ.items() if k.upper() in names}
 
