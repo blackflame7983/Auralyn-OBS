@@ -1,12 +1,18 @@
-# Auralyn OBSソース（ローカル試作）
+# Auralyn OBSソース（試作）
 
 Windows x64 / OBS 32.2.2専用の音声ソース。GPL-3.0-only。本体の加工済みstereo PCMを共有メモリから受け取り、OBSの音声周期で消費する。
 本体・プラグイン・通信仕様の版を分け、仕様の正本はAuralynに置く。参照版は `protocol.lock.json`、独立ビルド用スナップショットは `protocol/`。
 本体とプラグインはローカルcommitで区切り、実機で使った実行ファイルとソースのSHA-256を一組として確認する。
 `auralynBaseCommit` は通信仕様を参照したcommitであり、検証に使った本体実行ファイルや正式な最低対応版を表さない。
 
-このリポジトリにはリモート・公開Release・インストーラーはまだない。通常OBSへの自動導入、設定変更、マイク取得、録画、配信は行わない。
+ソースリポジトリは [blackflame7983/Auralyn-OBS](https://github.com/blackflame7983/Auralyn-OBS)。本体の作業管理は [Auralyn Issue #223](https://github.com/blackflame7983/Auralyn/issues/223)。
+公開Release・インストーラーはまだない。通常のビルド・テストでは、通常OBSへの自動導入、設定変更、マイク取得、録画、配信は行わない。
 試作の線形補間は音質を受入済みではなく、OBSの他の版との互換性も宣言しない。
+
+同じr17 DLLの隔離OBSでの実ASIO 96→48kHz・1時間試験に続き、承認後に通常OBSへ導入して再起動・120秒録音・元設定の保全を確認した。
+条件は [通常OBSの検証記録](docs/NORMAL_OBS_VALIDATION_20261103.md)、公開前の残件は [配布準備](docs/DISTRIBUTION_READINESS.md) を参照する。
+本体の送信機能は開発中のため、公開済みAuralynの通常版で利用できることや最低対応版を宣言しない。
+プラグイン単独のビルド・fixture検証には `protocol/` を使い、通信を変更するときは本体の正本と照合する。
 
 この作業ツリーでは `-DAURALYN_SINC48_POC=ON` の検証用ビルドで、48→48kHzを128 tap、88.2/96→48kHzを256 tap、176.4/192→48kHzを512 tap、いずれも256相のSinc補間へ切り替えられる。
 本体の処理・試聴用rateを変えず、OBS受信側だけで48kHzへ変換する。既定OFF。その他の組み合わせは線形補間のまま。
