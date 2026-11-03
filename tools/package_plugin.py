@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import zipfile
+from protocol_contract import SINC_MODES, EXTENDED_RATES
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_FILES = [
@@ -23,6 +24,8 @@ SOURCE_FILES = [
     'tools/voicemeeter_probe.py', 'tests/test_voicemeeter_probe.py', 'tests/test_native_waveform.py',
     'docs/SINC96_VALIDATION_20261103.md',
     'tools/analyze_native_clock.py', 'tests/test_native_clock_waveform.py',
+    'tools/protocol_contract.py', 'tests/test_protocol_contract.py',
+    'tools/native_rate_trial.py', 'tests/test_native_rate_trial.py', 'docs/EXTENDED_RATES_VALIDATION_20261103.md',
 ]
 COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp', 'src/sinc48.hpp']
 BINARY_NAME = 'auralyn-obs.dll'
@@ -139,13 +142,16 @@ def check_evidence(files, dll, evidence):
         if run['finalBridge'][key] != run['baselineBridge'][key]:
             raise ValueError(f'1時間の実機結果で受信状態が変化しています: {key}')
     interpolation = run['baselineBridge'].get('interpolation')
-    if interpolation not in ('linear-poc', 'sinc48-poc', 'sinc96-to48-poc') or run['finalBridge'].get('interpolation') != interpolation:
+    if interpolation not in ('linear-poc', *SINC_MODES.values()) or run['finalBridge'].get('interpolation') != interpolation:
         raise ValueError('検証した受信補間方式を一意に確認できません')
-    if interpolation == 'sinc96-to48-poc':
-        if (any(run[key].get('producerRate') != 96000 for key in ('baselineBridge', 'finalBridge'))
-                or run.get('reference', {}).get('rate') != 96000
-                or analysis.get('referenceRateHz') != 96000 or analysis.get('recordingRateHz') != 48000):
-            raise ValueError('96kHz入力と48kHz録画の実測値が一致しません')
+    if interpolation in set(SINC_MODES.values()) - {'sinc48-poc'}:
+        rate = next(rate for rate, mode in SINC_MODES.items() if mode == interpolation)
+        if (any(run[key].get('producerRate') != rate for key in ('baselineBridge', 'finalBridge'))
+                or run.get('reference', {}).get('rate') != rate
+                or analysis.get('referenceRateHz') != rate or analysis.get('recordingRateHz') != 48000):
+            raise ValueError('入力rateと48kHz録画の実測値が一致しません')
+        if rate in EXTENDED_RATES and run.get('reference', {}).get('streamMinor') != 1:
+            raise ValueError('追加rateの通信1.1を確認できません')
         if run.get('syntheticAsioProbe') and (
                 run.get('voicemeeterRestored') is not True or run.get('cleanupErrors')
                 or run.get('probeUnderflowDelta') != 0 or run.get('probe', {}).get('error') is not None
@@ -231,7 +237,8 @@ def check_evidence(files, dll, evidence):
 
 def check_protocol(files, lock):
     if (type(lock.get('major')) is not int or type(lock.get('minor')) is not int
-            or (lock.get('major'), lock.get('minor'), lock.get('obsVersion'), lock.get('obsCommit')) != (1, 0, '32.2.2', OBS_SDK_COMMIT)):
+            or (lock.get('major'), lock.get('minor'), lock.get('obsVersion'), lock.get('obsCommit')) != (1, 1, '32.2.2', OBS_SDK_COMMIT)
+            or lock.get('backwardCompatibleMinors') != [0]):
         raise ValueError('検証済みのOBS/通信版と一致しません')
     if not re.fullmatch(r'[a-f0-9]{40}', lock.get('auralynBaseCommit', '')):
         raise ValueError('本体の基点commitが不正です')

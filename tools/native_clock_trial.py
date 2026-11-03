@@ -14,6 +14,7 @@ sys.path.insert(0, str(PLUGIN / 'tools'))
 from native_acceptance import NAME, connect
 from native_support import Engine, Reference, snapshot
 from native_ui_soak import recording_route
+from protocol_contract import SINC_MODES
 
 
 def read_json(path):
@@ -278,7 +279,7 @@ if __name__ == '__main__':
     parser.add_argument('--camera', type=Path)
     parser.add_argument('--asio-insert-probe', action='store_true', help='Explicit temporary Banana AUX test; preserve and restore the original Insert patch/mute')
     parser.add_argument('--expect-clock', choices=['on', 'off'], required=True)
-    parser.add_argument('--expect-interpolation', choices=['linear-poc', 'sinc48-poc', 'sinc96-to48-poc'], default='sinc48-poc')
+    parser.add_argument('--expect-interpolation', choices=['linear-poc', *SINC_MODES.values()], default='sinc48-poc')
     parser.add_argument('--duration', type=int, default=60)
     parser.add_argument('--warmup', type=int, default=15)
     parser.add_argument('--output', default='FS2333')

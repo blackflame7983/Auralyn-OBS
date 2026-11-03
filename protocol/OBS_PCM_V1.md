@@ -1,4 +1,4 @@
-# Auralyn OBS PCM protocol 1.0（Windows x64試作）
+# Auralyn OBS PCM protocol 1.1（Windows x64試作、1.0互換）
 
 正本はAuralynリポジトリの本書。設計: [Issue #223](../plans/OBS_SOURCE_PLUGIN_223.md)。公開安定APIではない。
 
@@ -14,11 +14,11 @@
 | word | 値 |
 | --- | --- |
 | 0 | magic `0x41555043` |
-| 1/2 | major=1 / minor=0 |
+| 1/2 | major=1 / minor=0 または1（下記のrate契約） |
 | 3 | mapping bytes=196672 |
 | 4 | capacity frames=16384 |
 | 5 | channels=2 |
-| 6 | rate（44100 / 48000 / 96000） |
+| 6 | rate（44100 / 48000 / 88200 / 96000 / 176400 / 192000） |
 | 7 | producer PID |
 | 8 | epoch。quietへの遷移で更新 |
 | 9 | state: quiet=0 / running=1 / stopped=2 |
@@ -27,7 +27,14 @@
 
 初期化後にmagicを最後に公開する。送信者は同名mappingを上書きしない。
 受信側は正確なサイズでMapViewOfFileし、全固定値・rateを確認してからslotを読む。
-未知のmajor/minorは試作では拒否する。producer終了またはstoppedで接続を閉じる。
+major=1/minor=0では44100/48000/96000だけを受け付ける。
+major=1/minor=1では上記と88200/176400/192000を受け付ける。未知のmajor/minorや不正なminor/rateの組合せは拒否する。
+新送信側も従来の3レートではminor=0を出し、既存の1.0受信側を維持する。追加3レートだけminor=1を出す。
+1.0受信側は1.1を安全に拒否し、新受信側は両minorを受け付ける。mapping名・サイズ・slot形式は変更しない。
+producer終了またはstoppedで接続を閉じる。rate/minorが描画中に変わった場合も、その描画を無音にする。
+
+192kHzの目標待ち量50msは9600 frameで、16384 frameのring内に収まる。
+受信側は変換比率・filter履歴/先読みを含む作業領域を事前に確保する。384kHz以上は今回の契約へ含めない。
 
 ## スロット（各12bytes）
 

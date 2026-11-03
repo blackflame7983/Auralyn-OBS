@@ -66,15 +66,17 @@ def valid_manifest(value):
     if not isinstance(value, dict):
         raise ValueError('管理情報の形式が不正です')
     expected = {'schemaVersion': 1, 'package': 'auralyn-obs', 'platform': 'windows-x64', 'obsVersion': '32.2.2',
-                'protocolMajor': 1, 'protocolMinor': 0, 'sourceKind': 'auralyn_pcm_poc_v1'}
+                'protocolMajor': 1, 'sourceKind': 'auralyn_pcm_poc_v1'}
     if any(type(value.get(key)) is not type(wanted) or value.get(key) != wanted for key, wanted in expected.items()):
         raise ValueError('版または管理対象が一致しません')
+    if type(value.get('protocolMinor')) is not int or value['protocolMinor'] not in (0, 1):
+        raise ValueError('対応していない通信minorです')
     if not isinstance(value.get('version'), str) or not VERSION.fullmatch(value['version']):
         raise ValueError('版の形式が不正です')
     for key in ['binarySha256', 'sourceArchiveSha256']:
         if not isinstance(value.get(key), str) or not HASH.fullmatch(value[key]):
             raise ValueError(f'{key}が不正です')
-    return {key: value[key] for key in [*expected, 'version', 'binarySha256', 'sourceArchiveSha256']}
+    return {key: value[key] for key in [*expected, 'protocolMinor', 'version', 'binarySha256', 'sourceArchiveSha256']}
 
 
 def load_package(path):

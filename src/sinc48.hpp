@@ -7,13 +7,13 @@
 #include <numbers>
 
 namespace auralyn {
-template <size_t Taps, size_t CacheFrames, int CutoffMilli>
+template <size_t Taps, size_t CacheFrames, int CutoffMilli, int CutoffDenominator = 1000>
 struct SincBank {
     static constexpr size_t taps = Taps, phases = 256, past = taps / 2 - 1, future = taps / 2, cache_frames = CacheFrames;
     std::array<std::array<float, taps>, phases + 1> coefficients{};
     std::array<float, cache_frames> left{}, right{};
     SincBank() {
-        constexpr double cutoff = double(CutoffMilli) / 1000;
+        constexpr double cutoff = double(CutoffMilli) / CutoffDenominator;
         for (size_t phase = 0; phase <= phases; phase++) {
             std::array<double, taps> weights{};
             double sum = 0;
@@ -46,4 +46,7 @@ struct SincBank {
 };
 using Sinc48 = SincBank<128, 2200, 930>;
 using Sinc96 = SincBank<256, 4608, 465>;
+using Sinc88 = SincBank<256, 4608, 44640, 88200>;
+using Sinc176 = SincBank<512, 9216, 44640, 176400>;
+using Sinc192 = SincBank<512, 9216, 44640, 192000>;
 }

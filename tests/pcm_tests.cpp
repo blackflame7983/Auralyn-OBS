@@ -28,6 +28,7 @@ struct Producer {
     explicit Producer(uint32_t rate = 48000) {
         data[0] = auralyn::magic; data[1] = 1; data[3] = auralyn::bytes;
         data[4] = auralyn::capacity; data[5] = 2; data[6] = rate; data[7] = 1;
+        data[2] = (rate == 88200 || rate == 176400 || rate == 192000) ? 1 : 0;
         data[8] = 1; data[9] = 1;
         for (size_t i = 0; i < auralyn::capacity; i++) data[16 + i * 3] = UINT32_MAX;
     }
@@ -49,8 +50,19 @@ void fixture() {
     assert(number(json, "magic") == auralyn::magic);
     assert(number(json, "mappingBytes") == auralyn::bytes);
     assert(number(json, "capacity") == auralyn::capacity);
-    assert(number(json, "major") == 1 && number(json, "minor") == 0);
+    assert(number(json, "major") == 1 && number(json, "minor") == 1 && number(json, "legacyMinor") == 0);
     assert(number(json, "headerWords") == auralyn::header_words && number(json, "slotWords") == auralyn::slot_words);
+    std::regex rate_row("\\{[^{}]*\"rate\"[^{}]*\"streamMinor\"[^{}]*\\}");
+    int rates = 0;
+    for (auto it = std::sregex_iterator(json.begin(), json.end(), rate_row); it != std::sregex_iterator(); ++it) {
+        auto item = it->str();
+        const auto rate = uint32_t(number(item, "rate"));
+        Producer producer(rate);
+        assert(number(item, "streamMinor") == producer.data[2]);
+        assert(auralyn::valid(producer.data.data()));
+        rates++;
+    }
+    assert(rates == 6);
     std::regex row("\\{[^{}]*\"frame\"[^{}]*\\}");
     int rows = 0;
     for (auto it = std::sregex_iterator(json.begin(), json.end(), row); it != std::sregex_iterator(); ++it) {
@@ -77,6 +89,19 @@ void failures() {
     p.data[9] = 2; assert(!render(240000000));
     for (size_t index : {size_t(0),size_t(1),size_t(2),size_t(3),size_t(4),size_t(5),size_t(6),size_t(7)}) {
         Producer bad; bad.data[index] = index == 7 ? 0 : UINT32_MAX; assert(!auralyn::valid(bad.data.data()));
+    }
+    for (uint32_t rate : {44100u, 48000u, 96000u, 88200u, 176400u, 192000u, 384000u}) {
+        Producer stream(rate);
+        for (uint32_t minor : {0u, 1u, 2u}) {
+            stream.data[2] = minor;
+            const bool expected = minor <= 1 && (rate == 44100 || rate == 48000 || rate == 96000 ||
+                (minor == 1 && (rate == 88200 || rate == 176400 || rate == 192000)));
+            assert(auralyn::valid(stream.data.data()) == expected);
+            if (!expected) {
+                assert(!reader.render(stream.data.data(), l.data(), r.data(), l.size(), 48000, 0));
+                for (float value : l) assert(value == 0);
+            }
+        }
     }
     Producer wrap; wrap.cursor = UINT32_MAX - 1500; wrap.data[10] = wrap.cursor;
     auralyn::Reader wrapped;
@@ -116,7 +141,7 @@ void clocks(uint32_t rate, double ppm, size_t seconds) {
 
 // 実Readerへ同じデジタル入力を渡すオフライン測定。実時間・実機・聴感の受入ではない。
 void quality(const std::filesystem::path &input, const std::filesystem::path &output, double ppm, uint32_t input_rate) {
-    if (input_rate != 48000 && input_rate != 96000) throw std::runtime_error("input rate must be 48000 or 96000");
+    if (input_rate != 48000 && input_rate != 88200 && input_rate != 96000 && input_rate != 176400 && input_rate != 192000) throw std::runtime_error("input rate must be 48000, 88200, 96000, 176400 or 192000");
     if (!std::isfinite(ppm) || std::abs(ppm) > 1000) throw std::runtime_error("ppm must be finite and within +/-1000");
     std::ifstream source(input, std::ios::binary | std::ios::ate);
     if (!source) throw std::runtime_error("cannot open input f32le");
@@ -186,8 +211,8 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
 void sinc_boundaries() {
     assert(std::isfinite(auralyn::mono(std::numeric_limits<float>::max(), std::numeric_limits<float>::max())));
 #ifdef AURALYN_SINC48_POC
-    for (uint32_t rate : {48000u, 96000u}) {
-        const uint32_t written = rate == 48000 ? 5000 : 6000;
+    for (uint32_t rate : {48000u, 96000u, 88200u, 176400u, 192000u}) {
+        const uint32_t written = rate / 20 + 1000;
         for (double correction : {-2000.0, 2000.0}) {
             Producer p(rate); auralyn::Reader reader; std::array<float, 2048> l{}, r{};
             reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 0);
@@ -195,14 +220,14 @@ void sinc_boundaries() {
             reader.stats.correction_ppm = correction;
             const auto count = allocations;
             assert(reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
-            assert(allocations == count && reader.stats.interpolation == (rate == 48000 ? 1u : 2u));
+            assert(allocations == count && reader.stats.interpolation == (rate == 48000 ? 1u : rate == 96000 ? 2u : rate == 88200 ? 3u : rate == 176400 ? 4u : 5u));
             for (size_t i = 0; i < l.size(); i++) assert(std::isfinite(l[i]) && std::isfinite(r[i]));
         }
         Producer bad(rate); auralyn::Reader reader; std::array<float, 1024> l{}, r{};
         reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 0);
         bad.fill(written);
         // 出力開始位置より前のhistoryも、未完了tagを受け入れない。
-        const uint32_t history = rate == 48000 ? 63 : 127;
+        const uint32_t history = rate == 48000 ? 63 : rate <= 96000 ? 127 : 255;
         bad.data[16 + (written - rate / 20 - history) * 3] |= 1;
         assert(!reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
         assert(reader.stats.invalid == 1);
@@ -223,6 +248,25 @@ void sinc_boundaries() {
             else assert(gain < 0.0001);
         }
     }
+    // 新バンクも可聴帯域と折返し帯域の応答を検証する。
+    auto response = [](const auto &bank, double rate) {
+        for (size_t phase : {size_t(0), size_t(128), size_t(256)}) {
+            for (double frequency : {100.0, 1000.0, 10000.0, 19000.0, 20000.0, 24000.0, 25000.0}) {
+                double re = 0, im = 0;
+                for (size_t k = 0; k < bank.taps; k++) {
+                    const double angle = 2 * std::numbers::pi * frequency * double(k) / rate;
+                    re += bank.coefficients[phase][k] * std::cos(angle);
+                    im += bank.coefficients[phase][k] * std::sin(angle);
+                }
+                const double gain = std::hypot(re, im);
+                if (frequency <= 20000) assert(gain > .999 && gain < 1.001);
+                else assert(gain < .0001);
+            }
+        }
+    };
+    response(*std::make_unique<auralyn::Sinc88>(), 88200);
+    response(*std::make_unique<auralyn::Sinc176>(), 176400);
+    response(*std::make_unique<auralyn::Sinc192>(), 192000);
     // epochが変化しないレート切替でも旧履歴を使わず再primeする。
     Producer switched; auralyn::Reader changing; std::array<float, 1024> l{}, r{};
     assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 0));
@@ -238,6 +282,13 @@ void sinc_boundaries() {
     assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 60000000));
     switched.fill(6000); assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 70000000));
     assert(changing.stats.resets == 4 && changing.stats.interpolation == 2);
+    for (uint32_t rate : {88200u, 176400u, 192000u}) {
+        switched.data[2] = 1; switched.data[6] = rate;
+        assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 80000000));
+        switched.fill(rate / 20 + 1000);
+        assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 90000000));
+        assert(changing.stats.interpolation == (rate == 88200 ? 3u : rate == 176400 ? 4u : 5u));
+    }
 #endif
 }
 
@@ -250,7 +301,7 @@ int main(int argc, char **argv) {
             if (argc == 6) {
                 size_t rate_parsed = 0; const std::string text(argv[5]);
                 const auto value_rate = std::stoul(text, &rate_parsed);
-                if (rate_parsed != text.size() || (value_rate != 48000 && value_rate != 96000)) throw std::runtime_error("input rate must be 48000 or 96000");
+                if (rate_parsed != text.size() || (value_rate != 48000 && value_rate != 88200 && value_rate != 96000 && value_rate != 176400 && value_rate != 192000)) throw std::runtime_error("input rate must be 48000, 88200, 96000, 176400 or 192000");
                 rate = uint32_t(value_rate);
             }
             quality(argv[2], argv[3], ppm, rate); return 0;
@@ -261,7 +312,7 @@ int main(int argc, char **argv) {
     }
     const size_t seconds = argc == 2 && std::string(argv[1]) == "--long" ? 3600 : 120;
     fixture(); failures(); sinc_boundaries();
-    for (uint32_t rate : {44100u,48000u,96000u}) {
+    for (uint32_t rate : {44100u,48000u,96000u,88200u,176400u,192000u}) {
         auralyn::BlockClock clock;
         const uint64_t begin=10000000000, first=clock.advance(1024,rate,begin);
         const auto allocations_before=allocations;
@@ -275,6 +326,6 @@ int main(int argc, char **argv) {
         clock.advance(1024,rate,10000000000000);
         assert(clock.rebases==2);
     }
-    for (uint32_t rate : {44100u,48000u,96000u}) { clocks(rate, -1000, seconds); clocks(rate, 1000, seconds); }
+    for (uint32_t rate : {44100u,48000u,96000u,88200u,176400u,192000u}) { clocks(rate, -1000, seconds); clocks(rate, 1000, seconds); }
     std::cout << "PCM contract, mute, stale, wrap, overwrite, malformed headers and allocation checks passed\n";
 }

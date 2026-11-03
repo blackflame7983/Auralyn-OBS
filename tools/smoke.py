@@ -15,6 +15,8 @@ def main():
     parser.add_argument('--crash-first', action='store_true')
     parser.add_argument('--stress-stats', action='store_true')
     parser.add_argument('--evidence-dir', type=Path, help='Keep this run separate from earlier acceptance evidence')
+    parser.add_argument('--first-rate', type=int, choices=[44100, 48000, 88200, 96000, 176400, 192000], default=48000)
+    parser.add_argument('--second-rate', type=int, choices=[44100, 48000, 88200, 96000, 176400, 192000], default=44100)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     binaries = root / 'build/cmake/Release'
@@ -46,21 +48,22 @@ def main():
                     raise RuntimeError(f'libobs did not become ready; see {log}')
                 time.sleep(0.05)
             if args.crash_first:
-                first = subprocess.Popen([str(args.sender.resolve()), endpoint, '20', '48000', '500'],
+                first = subprocess.Popen([str(args.sender.resolve()), endpoint, '20', str(args.first_rate), '500'],
                     cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 children.append(first)
                 time.sleep(3)
                 first.terminate()
                 first.communicate(timeout=5)
             else:
-                subprocess.run([str(args.sender.resolve()), endpoint, '6', '48000', '500'], cwd=root, env=env, check=True, timeout=10)
+                subprocess.run([str(args.sender.resolve()), endpoint, '6', str(args.first_rate), '500'], cwd=root, env=env, check=True, timeout=10)
             time.sleep(1)
-            subprocess.run([str(args.sender.resolve()), endpoint, '6', '44100', '-500'], cwd=root, env=env, check=True, timeout=10)
+            subprocess.run([str(args.sender.resolve()), endpoint, '6', str(args.second_rate), '-500'], cwd=root, env=env, check=True, timeout=10)
             smoke.wait(timeout=12)
         lines = log.read_text(encoding='utf-8', errors='replace').splitlines()
         summary = next(json.loads(line) for line in lines if line.startswith('{'))
         summary['mode'] = mode
         summary['exitCode'] = smoke.returncode
+        summary['inputRatesHz'] = [args.first_rate, args.second_rate]
         text = '\n'.join(lines)
         summary['maxObsBufferMs'] = max((int(n) for n in re.findall(r'total audio buffering is now (\d+) milliseconds', text)), default=0)
         diagnostic = re.search(r'clock_diagnostics missed_locks=(\d+) resets=(\d+) stale=(\d+)', text)

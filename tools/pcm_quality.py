@@ -10,12 +10,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 import soundfile as sf
+from protocol_contract import QUALITY_RATES
 
 ROOT = Path(__file__).resolve().parents[1]
 RATE = 48000
 TONES = (100, 1000, 10000, 19000)
 WIDE_TONES = (*TONES, 20000)
 ALIAS_TONES = (24500, 26000, 30000, 40000)
+
+
+def alias_tones(rate):
+    # 96kの既存比較点は維持し、追加rateではNyquist直前と高い阻止域も測る。
+    if rate == 96000:
+        return ALIAS_TONES
+    extra = (60000, 80000) if rate >= 176400 else ()
+    if rate == 192000:
+        extra += (90000,)
+    return (*ALIAS_TONES, *extra, rate // 2 - 1000)
 
 
 def sha(path):
@@ -35,9 +46,9 @@ def probe(args):
         raise FileExistsError('probe and metadata must be new files')
     rate = getattr(args, 'sample_rate', RATE)
     kind = getattr(args, 'kind', 'passband')
-    if rate not in (48000, 96000) or kind not in ('passband', 'alias') or (kind == 'alias' and rate != 96000):
-        raise ValueError('alias probes require 96k; passband probes support 48k/96k')
-    tones = ALIAS_TONES if kind == 'alias' else WIDE_TONES if rate == 96000 else TONES
+    if rate not in QUALITY_RATES or kind not in ('passband', 'alias') or (kind == 'alias' and rate == 48000):
+        raise ValueError('alias probes require high-rate input; unsupported quality rate')
+    tones = alias_tones(rate) if kind == 'alias' else WIDE_TONES if rate != 48000 else TONES
     time = np.arange(args.seconds * rate, dtype=np.float64) / rate
     mono = (0.05 * sum(np.sin(2 * np.pi * frequency * time) for frequency in tones)).astype('<f4')
     data = np.column_stack((mono, mono)).astype('<f4').tobytes()
@@ -58,8 +69,8 @@ def analyze(args):
     stats = json.loads((run / 'stats.json').read_text(encoding='utf-8'))
     input_rate = stats.get('inputSampleRateHz', stats['sampleRateHz'])
     output_rate = stats.get('outputSampleRateHz', stats['sampleRateHz'])
-    if input_rate not in (48000, 96000) or output_rate != RATE or stats['channels'] != 2:
-        raise ValueError('only stereo 48k/96k input -> 48k output measurements are supported')
+    if input_rate not in QUALITY_RATES or output_rate != RATE or stats['channels'] != 2:
+        raise ValueError('unsupported stereo input -> 48k output measurement')
     before = np.fromfile(run / 'raw-input.f32', dtype='<f4').reshape(-1, 2)
     after = np.fromfile(run / 'after.f32', dtype='<f4').reshape(-1, 2)
     if (len(before) != stats['inputFrames'] or len(after) != stats['outputFrames']
@@ -83,10 +94,10 @@ def analyze(args):
         meta = json.loads(args.probe.read_text(encoding='utf-8'))
         tones = meta.get('tonesHz')
         alias_probe = meta.get('inputKind') == 'alias-probe'
-        expected_tones = ALIAS_TONES if alias_probe else WIDE_TONES if input_rate == 96000 else TONES
+        expected_tones = alias_tones(input_rate) if alias_probe else WIDE_TONES if input_rate != 48000 else TONES
         if (meta['inputSha256'] != sha(run / 'raw-input.f32') or tuple(tones or ()) != expected_tones
                 or meta.get('sampleRateHz') != input_rate or meta.get('channels') != 2
-                or alias_probe and input_rate != 96000):
+                or alias_probe and input_rate == 48000):
             raise ValueError('probe metadata differs from the measured raw input')
         for tone in tones:
             # 制御の周波数変動を帯域内に含め、固定周波数からのズレを歪率と呼ばない。
@@ -151,7 +162,7 @@ if __name__ == '__main__':
     make = commands.add_parser('probe')
     make.add_argument('--output', type=Path, required=True)
     make.add_argument('--seconds', type=int, default=70)
-    make.add_argument('--sample-rate', type=int, choices=[48000, 96000], default=48000)
+    make.add_argument('--sample-rate', type=int, choices=QUALITY_RATES, default=48000)
     make.add_argument('--kind', choices=['passband', 'alias'], default='passband')
     make.set_defaults(run_command=probe)
     inspect = commands.add_parser('analyze')

@@ -130,11 +130,16 @@ class Reference:
             pointer=kernel.MapViewOfFile(handle,4,0,0,196672)
             if not pointer: raise RuntimeError('Reference map failed')
             data=np.ctypeslib.as_array((ctypes.c_uint32*49168).from_address(pointer))
-            if list(data[:6])!=[0x41555043,1,0,196672,16384,2]: raise RuntimeError('Reference protocol mismatch')
-            self.rate=int(data[6]); cursor=int(data[10]); self.first_frame=cursor; self.ready.set()
+            from protocol_contract import valid_stream
+            if (list(data[:2]) != [0x41555043, 1] or list(data[3:6]) != [196672, 16384, 2]
+                    or not valid_stream(int(data[2]), int(data[6]))):
+                raise RuntimeError('Reference protocol mismatch')
+            self.rate=int(data[6]); self.minor=int(data[2]); cursor=int(data[10]); self.first_frame=cursor; self.ready.set()
             last_mark=0
             with self.path.open('xb') as output:
                 while not self.stop.is_set():
+                    if int(data[6]) != self.rate or int(data[2]) != self.minor:
+                        raise RuntimeError('Reference rate/minor changed during capture')
                     write=int(data[10]); available=(write-cursor)&0xffffffff
                     if available>16384: self.dropped+=available; cursor=write; continue
                     if available:
@@ -156,4 +161,4 @@ class Reference:
             if handle: kernel.CloseHandle(handle)
     def close(self):
         self.stop.set(); self.thread.join(timeout=10)
-        return {'frames':self.frames,'dropped':self.dropped,'rate':getattr(self,'rate',0),'firstFrame':getattr(self,'first_frame',0),'error':self.error,'marks':self.marks}
+        return {'frames':self.frames,'dropped':self.dropped,'rate':getattr(self,'rate',0),'streamMinor':getattr(self,'minor',None),'firstFrame':getattr(self,'first_frame',0),'error':self.error,'marks':self.marks}

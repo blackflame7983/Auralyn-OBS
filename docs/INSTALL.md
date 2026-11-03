@@ -5,7 +5,7 @@
 
 ## 配布候補を作る
 
-OBS 32.2.2、Windows x64、通信1.0を対象とする。1時間の実機結果の必須チェック、音声パケット長、3点以上の非無音波形の相関、およびDLLとソース4ファイル（Sincヘッダーを含む）が記録と一致する場合だけ候補を作る。開始・終了の受信補間方式も照合する。`analysis.json` の `checks.recordedAudioMatchesReference` も真である必要がある。
+OBS 32.2.2、Windows x64、通信1.1（旧rateの1.0互換）を対象とする。1時間の実機結果の必須チェック、音声パケット長、3点以上の非無音波形の相関、およびDLLとソース4ファイル（Sincヘッダーを含む）が記録と一致する場合だけ候補を作る。開始・終了の受信補間方式も照合する。`analysis.json` の `checks.recordedAudioMatchesReference` も真である必要がある。
 ソースは明示リストから取得し、録画、環境、認証設定、SDK checkout、build成果物をソースZIPへ混ぜない。
 
 ```powershell
@@ -16,9 +16,9 @@ python tools/package_plugin.py --output build/packages/local-poc-1 --evidence bu
 バイナリZIP、ソースZIP、manifest、`SHA256SUMS.txt` を同じディレクトリに生成する。
 バイナリZIPにはDLL、LICENSE、NOTICE、ソースZIP名とそのSHA-256、対応版を含む。ソースZIPには独自ソース、ビルド手順、通信スナップショット、試験と操作ツールを含む。
 
-ソースZIPは未コミットの作業ツリーから作成したsnapshotで、公開済みcommitの再現物ではない。本体の試作送信部も未コミットであり、記載した本体の基点commitだけでは動作しない。
-実機の記録と照合した対象はDLLと主要3ソースであり、全ビルド入力の来歴を証明するものではない。
-OBS SDKは含めず、manifestとNOTICEに固定元 `https://github.com/obsproject/obs-studio` とcommit `ba2f32bdf791005443988a4955e963663e16b1ed` を記録する。
+ソースZIPは作業時点のsnapshotで、commitと `sourceState` にcleanか作業差分を含むかを記録する。本体の基点commitは通信正本の参照版であり、実際に検証した本体実行ファイルは実機証拠のhashで別に特定する。
+実機の記録と照合する対象はDLLと主要4ソースであり、全ビルド入力の来歴を証明するものではない。
+このportable生成ツールのソースZIPにはOBS SDKを含めず、manifestとNOTICEに固定元 `https://github.com/obsproject/obs-studio` とcommit `ba2f32bdf791005443988a4955e963663e16b1ed` を記録する。固定SDKの必要入力を含む追加候補は [別の生成手順](RELEASE_BUILD.md) に従う。
 正式公開前には全ビルド入力、各依存の権利と対応ソースへのアクセス、同一commitからの再現性、署名、対応表を別途確認する。
 
 ## 隔離portable OBSへ導入する

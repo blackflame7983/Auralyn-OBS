@@ -1,6 +1,14 @@
 {
-  "magic": 1096110147, "major": 1, "minor": 0,
+  "magic": 1096110147, "major": 1, "minor": 1, "legacyMinor": 0,
   "mappingBytes": 196672, "capacity": 16384, "headerWords": 16, "slotWords": 3,
+  "rates": [
+    { "rate": 44100, "streamMinor": 0 },
+    { "rate": 48000, "streamMinor": 0 },
+    { "rate": 96000, "streamMinor": 0 },
+    { "rate": 88200, "streamMinor": 1 },
+    { "rate": 176400, "streamMinor": 1 },
+    { "rate": 192000, "streamMinor": 1 }
+  ],
   "frames": [
     { "frame": 0, "slotWord": 16, "tag": 0, "leftBits": 1048576000, "rightBits": 3196059648 },
     { "frame": 16384, "slotWord": 16, "tag": 32768, "leftBits": 1065353216, "rightBits": 3212836864 },

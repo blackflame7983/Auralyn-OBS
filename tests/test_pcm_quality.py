@@ -15,6 +15,18 @@ import pcm_quality as quality
 
 
 class QualityAnalysisTests(unittest.TestCase):
+    def test_extended_probe_rates_cover_passband_and_stopband(self):
+        with tempfile.TemporaryDirectory(prefix='quality-rates-test-', dir=ROOT / 'build') as folder:
+            for rate in (88200, 176400, 192000):
+                for kind in ('passband', 'alias'):
+                    path = Path(folder) / f'{rate}-{kind}.f32'
+                    quality.probe(SimpleNamespace(output=path, seconds=4, sample_rate=rate, kind=kind))
+                    metadata = json.loads(path.with_suffix('.f32.json').read_text())
+                    self.assertEqual(metadata['sampleRateHz'], rate)
+                    self.assertEqual(metadata['tonesHz'], list(quality.alias_tones(rate) if kind == 'alias' else quality.WIDE_TONES))
+                    self.assertTrue(all(t < rate / 2 for t in metadata['tonesHz']))
+                    self.assertEqual(path.stat().st_size, rate * 4 * 8)
+
     def test_96k_alias_measurement_detects_unfiltered_decimation(self):
         build = (ROOT / 'build').resolve(strict=True)
         with tempfile.TemporaryDirectory(prefix='quality-alias-test-', dir=build) as folder:

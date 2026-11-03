@@ -8,11 +8,13 @@ Windows x64 / OBS 32.2.2専用の音声ソース。GPL-3.0-only。本体の加�
 このリポジトリにはリモート・公開Release・インストーラーはまだない。通常OBSへの自動導入、設定変更、マイク取得、録画、配信は行わない。
 試作の線形補間は音質を受入済みではなく、OBSの他の版との互換性も宣言しない。
 
-この作業ツリーでは `-DAURALYN_SINC48_POC=ON` の検証用ビルドで、48→48kHzを128 tap、96→48kHzを256 tap、いずれも256相のSinc補間へ切り替えられる。
+この作業ツリーでは `-DAURALYN_SINC48_POC=ON` の検証用ビルドで、48→48kHzを128 tap、88.2/96→48kHzを256 tap、176.4/192→48kHzを512 tap、いずれも256相のSinc補間へ切り替えられる。
 本体の処理・試聴用rateを変えず、OBS受信側だけで48kHzへ変換する。既定OFF。その他の組み合わせは線形補間のまま。
 係数・scratchはSource生成時に用意し、render中の確保・解放・係数再生成は行わない。
 prime時は新しい世代の履歴も揃え、96kHzでは過去127 frame/未来128 frameを使う。これらを物理的な総遅延の実測値とは扱わない。
-従来DLLの実機1時間は [48kHzの検証記録](docs/SINC48_VALIDATION_20261103.md)、今回の変換は [96kHzの検証記録](docs/SINC96_VALIDATION_20261103.md) に区別する。聴感・他rate・一般配布の受入は別に判定する。
+従来DLLの実機1時間は [48kHz](docs/SINC48_VALIDATION_20261103.md) と [96kHz](docs/SINC96_VALIDATION_20261103.md) の記録に保持し、今回の新DLLへ転用しない。
+追加3rateの実装・測定と未確認は [追加rateの記録](docs/EXTENDED_RATES_VALIDATION_20261103.md) を参照する。聴感・実デバイス・一般配布の受入は別に判定する。
+通信の最大minorは1。従来3rateの送信はminor0を維持し、追加3rateはminor1を使う。新受信は両方に対応する。
 
 ```powershell
 cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64 -DAURALYN_SINC48_POC=ON
@@ -26,7 +28,7 @@ ctest --test-dir build/cmake -C Release --output-on-failure
 ## 受信処理だけのオフライン音質測定
 
 実機の長時間録画とは別に、`pcm_tests --quality` でDLLと同じ `Reader` をheap上のデータへ適用できる。
-共有メモリIPC・実OBSアプリ・実時間性能の試験ではない。入力はstereo 48/96kHz f32leの4〜300秒、出力は48kHz、出力先は未作成のディレクトリに限定する。
+共有メモリIPC・実OBSアプリ・実時間性能の試験ではない。入力はstereo 48/88.2/96/176.4/192kHz f32leの4〜300秒、出力は48kHz、出力先は未作成のディレクトリに限定する。
 raw前後・統計・時系列を残し、解析ではhash、波形/PSD、100/1000/10000/19000Hzの帯域内のレベル比と音量を揃えた試聴WAVを保存する。
 帯域幅±80Hzにはclock補正の周波数変動も含める。固定周波数からのズレを歪率やSNRとして扱わない。起動時の待機と入力先頭のskipは別に記録する。
 
@@ -44,6 +46,10 @@ transportのmodelが健全でも、音質の採用判断や聴感の合格を自
 96kHzのprobeは `probe --sample-rate 96000`、帯域外の折り返し確認はさらに `--kind alias` を指定する。
 Readerへ渡すときは `pcm_tests --quality INPUT.f32 NEWDIR PPM 96000` と入力rateを明示する。
 alias用は抑圧された成分を増幅しないよう試聴WAVを生成しない。
+追加3rateも `--sample-rate` とquality CLI末尾のrateをHzで明示する。同じ入力を各ppmで使い、実測のないrateは補間して合格と表示しない。
+
+実共有メモリと隔離OBS録画の結合試験は、`native_rate_trial.py --session SESSION --sender NEW_SENDER --source-workspace HOST_WORKTREE --seconds 60` を明示実行する。
+既定では追加3rateを各60秒、440Hz逆相stereoで録画し、PCM16/48kHz/time_base/非無音・逆相/packet時刻/エラー増分/原ファイル不変を確認する。マイク/VSTや高rateドライバーの受入ではない。
 
 実ASIOの明示試験には `native_clock_trial.py --asio-insert-probe --expect-clock off --expect-interpolation sinc96-to48-poc` を使う。
 Voicemeeter Bananaの実動作96kHz/pre-FX Insertと静音を確認し、AUX試験パッチだけを変更する。変更前をjournalへ先行保存し、終了時に所有値だけ比較して復元する。
@@ -63,7 +69,7 @@ PowerShellでリポジトリルートから実行する。OBSのDLLは読み取�
 git clone --depth 1 --branch 32.2.2 https://github.com/obsproject/obs-studio.git build/obs-studio
 # HEADが ba2f32bdf791005443988a4955e963663e16b1ed であることを確認
 git -C build/obs-studio rev-parse HEAD
-python tools/verify_protocol.py --auralyn ../VSTHost-obs223
+python tools/verify_protocol.py --auralyn ../VSTHost-obs223-rates
 cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
 cmake --build build/cmake --config Release --parallel 4
 ctest --test-dir build/cmake -C Release --output-on-failure

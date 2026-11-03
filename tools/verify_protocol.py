@@ -23,7 +23,7 @@ def main():
             raise RuntimeError(f'Snapshot differs from protocol.lock.json: {local}')
         if args.auralyn and digest(args.auralyn / canonical) != lock[key]:
             raise RuntimeError(f'Auralyn canonical source differs: {canonical}')
-    print('Protocol 1.0 snapshots and fixtures match' + (' the Auralyn canonical source.' if args.auralyn else '.'))
+    print(f'Protocol {lock["major"]}.{lock["minor"]} snapshots and fixtures match' + (' the Auralyn canonical source.' if args.auralyn else '.'))
 
 
 if __name__ == '__main__':

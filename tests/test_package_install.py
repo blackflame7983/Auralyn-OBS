@@ -339,7 +339,20 @@ class PackageInstallTests(unittest.TestCase):
             result_path.write_text(json.dumps(run))
             analysis_path.write_text(json.dumps(analysis))
             return package.check_evidence(files, dll, folder / 'code-manifest.json')
-        self.assertEqual(check()['receiverInterpolation'], 'sinc96-to48-poc')
+        for rate, mode in package.SINC_MODES.items():
+            if rate == 48000:
+                continue
+            for key in ('baselineBridge', 'finalBridge'):
+                run[key].update(interpolation=mode, producerRate=rate)
+            run['reference']['rate'] = rate
+            run['reference']['streamMinor'] = 1 if rate in package.EXTENDED_RATES else 0
+            analysis['referenceRateHz'] = rate
+            self.assertEqual(check()['receiverInterpolation'], mode)
+            if rate in package.EXTENDED_RATES:
+                run['reference']['streamMinor'] = 0
+                with self.assertRaisesRegex(ValueError, '通信1.1'):
+                    check()
+                run['reference']['streamMinor'] = 1
         analysis['recordingRateHz'] = 96000
         with self.assertRaisesRegex(ValueError, '実測値'):
             check()

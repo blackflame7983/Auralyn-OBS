@@ -1,7 +1,7 @@
 # Auralyn OBSソース試作
 
 日本語で説明・コメントする。GPL-3.0-onlyの独自コードを管理する。
-本体は隣の `../VSTHost-obs223`（この試作の作業ツリー）、通常のcheckoutは `../VSTHost`。
+今回の通信1.1の本体は隣の `../VSTHost-obs223-rates`、通常のcheckoutは `../VSTHost`。以前の `../VSTHost-obs223` と96kHz候補の証拠を上書きしない。
 通信仕様の正本は本体の `docs/protocols/OBS_PCM_V1.md`、全体設計は `docs/plans/OBS_SOURCE_PLUGIN_223.md`。
 参照した版は `protocol.lock.json`。`protocol/` は独立ビルド用の固定スナップショットで、独自に仕様変更しない。
 通信構造・停止・mute・再接続を変える時は双方の差分と共通fixtureを検証する。
