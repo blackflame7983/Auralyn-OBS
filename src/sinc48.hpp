@@ -1,5 +1,5 @@
 #pragma once
-// 48kHz同率のclock補正用。係数とscratchはReader生成時（非RT）に確保する。
+// 係数とscratchはReader生成時（非RT）に確保する。
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -7,19 +7,20 @@
 #include <numbers>
 
 namespace auralyn {
-struct Sinc48 {
-    static constexpr size_t taps = 128, phases = 256, past = 63, future = 64, cache_frames = 2200;
+template <size_t Taps, size_t CacheFrames, int CutoffMilli>
+struct SincBank {
+    static constexpr size_t taps = Taps, phases = 256, past = taps / 2 - 1, future = taps / 2, cache_frames = CacheFrames;
     std::array<std::array<float, taps>, phases + 1> coefficients{};
     std::array<float, cache_frames> left{}, right{};
-    Sinc48() {
-        constexpr double cutoff = .93;
+    SincBank() {
+        constexpr double cutoff = double(CutoffMilli) / 1000;
         for (size_t phase = 0; phase <= phases; phase++) {
             std::array<double, taps> weights{};
             double sum = 0;
             for (size_t k = 0; k < taps; k++) {
                 const double x = double(k) - past - double(phase) / phases;
-                const double angle = std::numbers::pi * x / 64;
-                const double window = std::abs(x) >= 64 ? 0 : .35875 + .48829 * std::cos(angle)
+                const double angle = std::numbers::pi * x / future;
+                const double window = std::abs(x) >= future ? 0 : .35875 + .48829 * std::cos(angle)
                     + .14128 * std::cos(2 * angle) + .01168 * std::cos(3 * angle);
                 const double sinc = std::abs(x) < 1e-12 ? cutoff : std::sin(std::numbers::pi * cutoff * x) / (std::numbers::pi * x);
                 weights[k] = window * sinc; sum += weights[k];
@@ -43,4 +44,6 @@ struct Sinc48 {
         l = float(std::clamp(a, -limit, limit)); r = float(std::clamp(b, -limit, limit));
     }
 };
+using Sinc48 = SincBank<128, 2200, 930>;
+using Sinc96 = SincBank<256, 4608, 465>;
 }

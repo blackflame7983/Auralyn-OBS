@@ -321,6 +321,101 @@ class PackageInstallTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             package.package(output, evidence, '0.1.0-test')
 
+    def test_96k_evidence_requires_measured_rates_and_probe_cleanup(self):
+        folder = self.synthetic_evidence()
+        result_path, analysis_path = folder / 'result.json', folder / 'analysis.json'
+        run = json.loads(result_path.read_text())
+        analysis = json.loads(analysis_path.read_text())
+        for key in ('baselineBridge', 'finalBridge'):
+            run[key].update(interpolation='sinc96-to48-poc', producerRate=96000)
+        run['reference']['rate'] = 96000
+        run.update(syntheticAsioProbe=True, voicemeeterRestored=True, cleanupErrors=[],
+                   probeUnderflowDelta=0, probe={'error': None})
+        analysis.update(referenceRateHz=96000, recordingRateHz=48000)
+        analysis['checks'].update(probePlaybackContinuous=True, voicemeeterSettingsRestored=True)
+        files = package.read_sources()
+        dll = (ROOT / 'build/cmake/Release/auralyn-obs.dll').read_bytes()
+        def check():
+            result_path.write_text(json.dumps(run))
+            analysis_path.write_text(json.dumps(analysis))
+            return package.check_evidence(files, dll, folder / 'code-manifest.json')
+        self.assertEqual(check()['receiverInterpolation'], 'sinc96-to48-poc')
+        analysis['recordingRateHz'] = 96000
+        with self.assertRaisesRegex(ValueError, '実測値'):
+            check()
+        analysis['recordingRateHz'] = 48000
+        run['voicemeeterRestored'] = False
+        with self.assertRaisesRegex(ValueError, '復元'):
+            check()
+        run['voicemeeterRestored'] = True
+        run['probeUnderflowDelta'] = 1
+        with self.assertRaisesRegex(ValueError, '連続再生'):
+            check()
+
+    def test_post_analysis_requires_method_sources_inputs_and_all_segments(self):
+        import copy
+        folder = self.synthetic_evidence()
+        result_path, analysis_path = folder / 'result.json', folder / 'analysis.json'
+        run = json.loads(result_path.read_text())
+        recording = folder / 'synthetic-recording.bin'
+        recording.write_bytes(b'synthetic validator data, not audio acceptance')
+        (folder / 'reference.f32').write_bytes(b'synthetic reference')
+        run['recording'] = {'outputPath': str(recording)}
+        result_path.write_text(json.dumps(run))
+        manifest_path = folder / 'code-manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['files'][str(ROOT / 'tools/analyze_native.py')] = package.digest((ROOT / 'tools/analyze_native.py').read_bytes())
+        manifest_path.write_text(json.dumps(manifest))
+        analysis = json.loads(analysis_path.read_text())
+        first = copy.deepcopy(analysis)
+        first['checks']['recordedAudioMatchesReference'] = False
+        for match in first['waveformMatches']:
+            match['normalizedCorrelation'] = .897
+        (folder / 'analysis-fraction-only.json').write_text(json.dumps(first))
+        files = package.read_sources()
+        for match in analysis['waveformMatches']:
+            match.update(alignmentMethod='bounded-affine-150ms-six-segments-v1', optimizerConverged=True,
+                         fittedRelativePpm=332, fixedRatioCorrelation=.897,
+                         segments=[{'rms': .1, 'normalizedCorrelation': .999} for _ in range(6)])
+        analysis['postAnalysis'] = {
+            'method': 'bounded-affine-150ms-six-segments-v1', 'toolFile': 'tools/analyze_native_clock.py',
+            'toolSha256': package.digest(files['tools/analyze_native_clock.py']),
+            'baseToolSha256': package.digest(files['tools/analyze_native.py']),
+            'maxFitPpm': 2000, 'comparisonOnly': True, 'captureFilesUsedReadOnly': True,
+            'captureCodeManifestUnchanged': True, 'retainedFirstPass': 'analysis-fraction-only.json',
+            **{key: package.file_digest(path) for key, path in {
+                'captureManifestSha256': manifest_path, 'captureResultSha256': result_path,
+                'firstPassAnalysisSha256': folder / 'analysis-fraction-only.json',
+                'referenceSha256': folder / 'reference.f32', 'recordingSha256': recording}.items()}}
+        dll = (ROOT / 'build/cmake/Release/auralyn-obs.dll').read_bytes()
+        def check(value):
+            analysis_path.write_text(json.dumps(value))
+            package.check_evidence(files, dll, manifest_path)
+        check(analysis)
+        mutations = [
+            lambda x: x.pop('postAnalysis'),
+            lambda x: x['postAnalysis'].__setitem__('method', 'unknown'),
+            lambda x: x['postAnalysis'].__setitem__('toolSha256', 'a' * 64),
+            lambda x: x['postAnalysis'].__setitem__('baseToolSha256', 'a' * 64),
+            lambda x: x['postAnalysis'].__setitem__('maxFitPpm', 4000),
+            lambda x: x['postAnalysis'].__setitem__('referenceSha256', 'a' * 64),
+            lambda x: x['postAnalysis'].__setitem__('recordingSha256', 'a' * 64),
+            lambda x: x['postAnalysis'].__setitem__('firstPassAnalysisSha256', 'a' * 64),
+            lambda x: x['waveformMatches'][0]['segments'][2].__setitem__('normalizedCorrelation', .9),
+            lambda x: x['waveformMatches'][0]['segments'][2].__setitem__('rms', 0),
+            lambda x: x['waveformMatches'][0]['segments'].pop(),
+            lambda x: x['waveformMatches'][0].__setitem__('fittedRelativePpm', 2001),
+            lambda x: x['waveformMatches'][0].pop('fixedRatioCorrelation'),
+            lambda x: x['waveformMatches'][0].__setitem__('optimizerConverged', False),
+            lambda x: x['waveformMatches'][0].__setitem__('normalizedCorrelation', .9),
+            lambda x: x['waveformMatches'][0].__setitem__('fixedRatioCorrelation', .8),
+        ]
+        for mutate in mutations:
+            invalid = copy.deepcopy(analysis)
+            mutate(invalid)
+            with self.assertRaises(ValueError):
+                check(invalid)
+
     def test_evidence_rejects_failed_missing_silent_or_incomplete_audio(self):
         import copy
         source = self.synthetic_evidence()

@@ -50,7 +50,8 @@ def run(args):
     def new_engine(number, start_config=None):
         folder = evidence / f'engine-{number}'
         folder.mkdir()
-        child = Engine(args.auralyn / 'src-tauri/target/debug/audio_engine.exe', folder, meta['endpoint'])
+        binary = args.engine or args.auralyn / 'src-tauri/target/debug/audio_engine.exe'
+        child = Engine(binary.resolve(strict=True), folder, meta['endpoint'])
         try:
             child.request('LiveOutput', {'config': {'deviceId': None, 'monitorTrim': 0, 'broadcastTrim': 1, 'monitorMuted': True}})
             child.request('SetNoiseReduction', {'active': False, 'mode': None})
@@ -202,6 +203,7 @@ if __name__ == '__main__':
     parser.add_argument('--analyze', type=Path)
     parser.add_argument('--scans', type=int, default=5)
     parser.add_argument('--auralyn', type=Path, default=ROOT.parent / 'VSTHost-obs223')
+    parser.add_argument('--engine', type=Path, help='Frozen engine executable; otherwise use the workspace debug binary')
     parser.add_argument('--device', type=Path, default=ROOT.parent / 'VSTHost-obs223/test-results/issue223/native-camera/camera-device.json')
     parser.add_argument('--vst', type=Path, default=Path('C:/Program Files/Common Files/VST3/OTT.vst3'))
     parser.add_argument('--output', default='14T-N72')

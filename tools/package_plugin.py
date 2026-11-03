@@ -20,6 +20,9 @@ SOURCE_FILES = [
     'tools/pcm_quality.py', 'tools/native_clock_trial.py', 'tests/test_native_clock_trial.py',
     'docs/INSTALL.md', 'docs/DISTRIBUTION_READINESS.md', 'docs/PCM_QUALITY_VALIDATION_20261103.md',
     'docs/SINC48_VALIDATION_20261103.md',
+    'tools/voicemeeter_probe.py', 'tests/test_voicemeeter_probe.py', 'tests/test_native_waveform.py',
+    'docs/SINC96_VALIDATION_20261103.md',
+    'tools/analyze_native_clock.py', 'tests/test_native_clock_waveform.py',
 ]
 COMPILED_SOURCE = ['src/plugin.cpp', 'src/pcm.hpp', 'src/audio_clock.hpp', 'src/sinc48.hpp']
 BINARY_NAME = 'auralyn-obs.dll'
@@ -28,6 +31,14 @@ OBS_SDK_COMMIT = 'ba2f32bdf791005443988a4955e963663e16b1ed'
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def file_digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
 
 
 def json_bytes(value):
@@ -128,8 +139,71 @@ def check_evidence(files, dll, evidence):
         if run['finalBridge'][key] != run['baselineBridge'][key]:
             raise ValueError(f'1時間の実機結果で受信状態が変化しています: {key}')
     interpolation = run['baselineBridge'].get('interpolation')
-    if interpolation not in ('linear-poc', 'sinc48-poc') or run['finalBridge'].get('interpolation') != interpolation:
+    if interpolation not in ('linear-poc', 'sinc48-poc', 'sinc96-to48-poc') or run['finalBridge'].get('interpolation') != interpolation:
         raise ValueError('検証した受信補間方式を一意に確認できません')
+    if interpolation == 'sinc96-to48-poc':
+        if (any(run[key].get('producerRate') != 96000 for key in ('baselineBridge', 'finalBridge'))
+                or run.get('reference', {}).get('rate') != 96000
+                or analysis.get('referenceRateHz') != 96000 or analysis.get('recordingRateHz') != 48000):
+            raise ValueError('96kHz入力と48kHz録画の実測値が一致しません')
+        if run.get('syntheticAsioProbe') and (
+                run.get('voicemeeterRestored') is not True or run.get('cleanupErrors')
+                or run.get('probeUnderflowDelta') != 0 or run.get('probe', {}).get('error') is not None
+                or any(analysis['checks'].get(k) is not True for k in
+                       ('probePlaybackContinuous', 'voicemeeterSettingsRestored'))):
+            raise ValueError('ASIO試験信号の連続再生または元の設定への復元を確認できません')
+    post = analysis.get('postAnalysis')
+    affine_fields = ('alignmentMethod', 'fittedRelativePpm', 'segments', 'fixedRatioCorrelation')
+    if post is None and any(isinstance(m, dict) and any(k in m for k in affine_fields) for m in analysis['waveformMatches']):
+        raise ValueError('事後clock解析の方法・入力SHA情報がありません')
+    if post is not None:
+        if not isinstance(recorded, dict):
+            raise ValueError('実機manifestのfilesが不正です')
+        if (not isinstance(post, dict) or post.get('method') != 'bounded-affine-150ms-six-segments-v1'
+                or post.get('toolFile') != 'tools/analyze_native_clock.py'
+                or post.get('toolSha256') != digest(files['tools/analyze_native_clock.py'])
+                or post.get('baseToolSha256') != digest(files['tools/analyze_native.py'])
+                or post.get('maxFitPpm') != 2000 or type(post.get('maxFitPpm')) is not int
+                or post.get('comparisonOnly') is not True or post.get('captureFilesUsedReadOnly') is not True
+                or post.get('captureCodeManifestUnchanged') is not True
+                or post.get('retainedFirstPass') != 'analysis-fraction-only.json'):
+            raise ValueError('事後clock解析の方式・ソース・範囲が不一致です')
+        captured_base = [v for k, v in recorded.items() if k.replace('\\', '/').lower().endswith('/tools/analyze_native.py')]
+        if captured_base != [post['baseToolSha256']]:
+            raise ValueError('録画時に固定した元の解析コードと不一致です')
+        artifacts = {'captureManifestSha256': evidence, 'captureResultSha256': evidence.with_name('result.json'),
+                     'firstPassAnalysisSha256': evidence.with_name('analysis-fraction-only.json'),
+                     'referenceSha256': evidence.with_name('reference.f32'),
+                     'recordingSha256': Path(run['recording']['outputPath'])}
+        if any(post.get(key) != file_digest(path) for key, path in artifacts.items()):
+            raise ValueError('事後clock解析と元の録画・参照・解析のSHA-256が不一致です')
+        first_pass = json.loads(evidence.with_name('analysis-fraction-only.json').read_bytes())
+        if (not isinstance(first_pass, dict) or first_pass.get('postAnalysis') is not None
+                or first_pass.get('recording') != analysis.get('recording')
+                or first_pass.get('referenceRateHz') != analysis.get('referenceRateHz')
+                or first_pass.get('recordingRateHz') != analysis.get('recordingRateHz')):
+            raise ValueError('保存した固定比率解析と入力条件が不一致です')
+        original_matches = first_pass.get('waveformMatches', [])
+        if not isinstance(original_matches, list) or len(original_matches) != len(analysis['waveformMatches']):
+            raise ValueError('保存した固定比率解析と比較窓が不一致です')
+        original_scores = {m['seconds']: m.get('normalizedCorrelation') for m in original_matches
+                           if isinstance(m, dict) and number(m.get('seconds'))}
+        for match in analysis['waveformMatches']:
+            if not isinstance(match, dict):
+                raise ValueError('事後clock解析の比較窓が不正です')
+            segments = match.get('segments', [])
+            if (match.get('alignmentMethod') != post['method'] or match.get('optimizerConverged') is not True
+                    or not number(match.get('seconds')) or not 0 <= match['seconds'] <= analysis['requestedSeconds']
+                    or match.get('silent') or match.get('unavailable')
+                    or not number(match.get('rms')) or match['rms'] <= 1e-7
+                    or not number(match.get('normalizedCorrelation')) or not .95 <= match['normalizedCorrelation'] <= 1
+                    or not number(match.get('fittedRelativePpm')) or abs(match['fittedRelativePpm']) > 2000
+                    or not number(match.get('fixedRatioCorrelation')) or not -1 <= match['fixedRatioCorrelation'] <= 1
+                    or match['fixedRatioCorrelation'] != original_scores.get(match['seconds'])
+                    or not isinstance(segments, list) or len(segments) != 6
+                    or any(not isinstance(s, dict) or not number(s.get('rms')) or s['rms'] <= 1e-7
+                        or not number(s.get('normalizedCorrelation')) or not .95 <= s['normalizedCorrelation'] <= 1 for s in segments)):
+                raise ValueError('事後clock解析の局所整合・速度範囲が不正です')
     if not isinstance(recorded, dict):
         raise ValueError('実機manifestのfilesが不正です')
     normalized = {}

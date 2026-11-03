@@ -144,15 +144,15 @@ def prepare(output, original_dir, evidence, sdk=None):
     if not dll.startswith(b'MZ') or base.digest(dll) != original.get('binarySha256'):
         raise ValueError('指定パッケージのDLLが不一致です')
     verified = base.check_evidence(files, dll, evidence)
-    if verified != original.get('nativeEvidence') or verified.get('receiverInterpolation') != 'sinc48-poc':
+    if verified != original.get('nativeEvidence') or verified.get('receiverInterpolation') not in ('sinc48-poc', 'sinc96-to48-poc'):
         raise ValueError('指定パッケージの実機結果またはSinc方式が不一致です')
     sdk_path, inputs = build_inputs(ROOT / 'build/cmake', sdk)
     sdk_files, excluded = sdk_sources(sdk_path)
     source = base.zip_bytes({**{'plugin/' + k: v for k, v in files.items()}, **{'obs-sdk/' + k: v for k, v in sdk_files.items()}})
     source_name = 'auralyn-obs-local-source.zip'
     manifest = {'schemaVersion': 1, 'localOnly': True, 'signed': False, 'publicationApproved': False,
-                'platform': 'windows-x64', 'obsVersion': '32.2.2', 'receiverInterpolation': 'sinc48-poc',
-                'audioScope': '48000 Hz Sinc; other rates use linear interpolation', 'pluginSourceCommit': commit,
+                'platform': 'windows-x64', 'obsVersion': '32.2.2', 'receiverInterpolation': verified['receiverInterpolation'],
+                'audioScope': '48000/96000 Hz input to 48000 Hz Sinc; other rates use linear interpolation', 'pluginSourceCommit': commit,
                 'pluginSourceState': 'clean-checkout-snapshot',
                 'pluginFilesSha256': {k: base.digest(v) for k, v in sorted(files.items())},
                 'obsSdkCommit': base.OBS_SDK_COMMIT, 'obsSdkFileCount': len(sdk_files), 'obsSdkExcludedFileCount': len(excluded), 'obsSdkExcluded': excluded,

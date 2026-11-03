@@ -14,6 +14,8 @@ import soundfile as sf
 ROOT = Path(__file__).resolve().parents[1]
 RATE = 48000
 TONES = (100, 1000, 10000, 19000)
+WIDE_TONES = (*TONES, 20000)
+ALIAS_TONES = (24500, 26000, 30000, 40000)
 
 
 def sha(path):
@@ -31,26 +33,33 @@ def probe(args):
     metadata = args.output.with_suffix(args.output.suffix + '.json')
     if args.output.exists() or metadata.exists():
         raise FileExistsError('probe and metadata must be new files')
-    time = np.arange(args.seconds * RATE, dtype=np.float64) / RATE
-    mono = (0.05 * sum(np.sin(2 * np.pi * frequency * time) for frequency in TONES)).astype('<f4')
+    rate = getattr(args, 'sample_rate', RATE)
+    kind = getattr(args, 'kind', 'passband')
+    if rate not in (48000, 96000) or kind not in ('passband', 'alias') or (kind == 'alias' and rate != 96000):
+        raise ValueError('alias probes require 96k; passband probes support 48k/96k')
+    tones = ALIAS_TONES if kind == 'alias' else WIDE_TONES if rate == 96000 else TONES
+    time = np.arange(args.seconds * rate, dtype=np.float64) / rate
+    mono = (0.05 * sum(np.sin(2 * np.pi * frequency * time) for frequency in tones)).astype('<f4')
     data = np.column_stack((mono, mono)).astype('<f4').tobytes()
     with args.output.open('xb') as file:
         file.write(data)
-    write_json(metadata, {'inputKind': 'multitone', 'sampleRateHz': RATE, 'channels': 2,
-                         'tonesHz': TONES, 'peakPerTone': .05, 'seconds': args.seconds,
+    write_json(metadata, {'inputKind': 'alias-probe' if kind == 'alias' else 'multitone', 'sampleRateHz': rate, 'channels': 2,
+                         'tonesHz': tones, 'peakPerTone': .05, 'seconds': args.seconds,
                          'inputSha256': hashlib.sha256(data).hexdigest()})
 
 
-def psd(samples):
-    frequency, power = signal.welch(samples, fs=RATE, axis=0, nperseg=RATE, noverlap=RATE // 2)
+def psd(samples, rate=RATE):
+    frequency, power = signal.welch(samples, fs=rate, axis=0, nperseg=rate, noverlap=rate // 2)
     return frequency, np.mean(power, axis=1)
 
 
 def analyze(args):
     run = args.run.resolve(strict=True)
     stats = json.loads((run / 'stats.json').read_text(encoding='utf-8'))
-    if stats['sampleRateHz'] != RATE or stats['channels'] != 2:
-        raise ValueError('only stereo 48k measurements are supported')
+    input_rate = stats.get('inputSampleRateHz', stats['sampleRateHz'])
+    output_rate = stats.get('outputSampleRateHz', stats['sampleRateHz'])
+    if input_rate not in (48000, 96000) or output_rate != RATE or stats['channels'] != 2:
+        raise ValueError('only stereo 48k/96k input -> 48k output measurements are supported')
     before = np.fromfile(run / 'raw-input.f32', dtype='<f4').reshape(-1, 2)
     after = np.fromfile(run / 'after.f32', dtype='<f4').reshape(-1, 2)
     if (len(before) != stats['inputFrames'] or len(after) != stats['outputFrames']
@@ -59,42 +68,52 @@ def analyze(args):
     ppm = stats['ppm']
     if not np.isfinite(ppm) or abs(ppm) > 1000:
         raise ValueError('invalid modeled clock difference')
-    a = before[RATE:-RATE]
-    b = after[RATE + int(stats['prefillFrames']):-RATE]
-    if min(len(a), len(b)) < RATE:
+    a = before[input_rate:-input_rate]
+    b = after[output_rate + int(stats['prefillFrames']):-output_rate]
+    if len(a) < input_rate or len(b) < output_rate:
         raise ValueError('measurement is too short after trimming')
     rms_a, rms_b = [float(np.sqrt(np.mean(np.square(x, dtype=np.float64)))) for x in (a, b)]
     if min(rms_a, rms_b) <= 0:
         raise ValueError('nonzero audio is required for a level-matched comparison')
-    frequency, pa = psd(a)
-    _, pb = psd(b)
-    gains = []
+    frequency_a, pa = psd(a, input_rate)
+    frequency_b, pb = psd(b, output_rate)
+    gains, aliases = [], []
+    alias_probe = False
     if args.probe:
         meta = json.loads(args.probe.read_text(encoding='utf-8'))
-        if meta['inputSha256'] != sha(run / 'raw-input.f32') or tuple(meta['tonesHz']) != TONES:
+        tones = meta.get('tonesHz')
+        alias_probe = meta.get('inputKind') == 'alias-probe'
+        expected_tones = ALIAS_TONES if alias_probe else WIDE_TONES if input_rate == 96000 else TONES
+        if (meta['inputSha256'] != sha(run / 'raw-input.f32') or tuple(tones or ()) != expected_tones
+                or meta.get('sampleRateHz') != input_rate or meta.get('channels') != 2
+                or alias_probe and input_rate != 96000):
             raise ValueError('probe metadata differs from the measured raw input')
-        for tone in TONES:
+        for tone in tones:
             # 制御の周波数変動を帯域内に含め、固定周波数からのズレを歪率と呼ばない。
-            power_a = float(pa[np.abs(frequency - tone) <= 80].sum())
-            power_b = float(pb[np.abs(frequency - tone * (1 + ppm * 1e-6)) <= 80].sum())
+            center = tone * (1 + ppm * 1e-6)
+            if alias_probe:
+                center = abs((center + output_rate / 2) % output_rate - output_rate / 2)
+            power_a = float(pa[np.abs(frequency_a - tone) <= 80].sum())
+            power_b = float(pb[np.abs(frequency_b - center) <= 80].sum())
             if min(power_a, power_b) <= 0:
                 raise ValueError('missing probe tone power')
-            gains.append({'toneHz': tone, 'bandHalfWidthHz': 80,
-                          'afterBandCenterHz': tone * (1 + ppm * 1e-6),
-                          'gainDb': float(10 * np.log10(power_b / power_a))})
+            (aliases if alias_probe else gains).append({'toneHz': tone, 'bandHalfWidthHz': 80,
+                          'afterBandCenterHz': center, 'gainDb': float(10 * np.log10(power_b / power_a))})
     gain = rms_a / rms_b
     peak = max(float(np.max(np.abs(before))), float(np.max(np.abs(after))) * gain)
     common_gain = min(1.0, .99 / peak)
     args.output.mkdir(exist_ok=False)
-    sf.write(args.output / 'before-listen.wav', before * common_gain, RATE, subtype='FLOAT')
-    sf.write(args.output / 'after-listen.wav', after * (gain * common_gain), RATE, subtype='FLOAT')
+    # 超音波の除去試験は、微小な残留音を増幅する試聴資料を作らない。
+    if not alias_probe:
+        sf.write(args.output / 'before-listen.wav', before * common_gain, input_rate, subtype='FLOAT')
+        sf.write(args.output / 'after-listen.wav', after * (gain * common_gain), output_rate, subtype='FLOAT')
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
-    for name, samples, power in [('before', a, pa), ('after', b, pb)]:
+    for name, samples, frequency, power, rate in [('before', a, frequency_a, pa, input_rate), ('after', b, frequency_b, pb, output_rate)]:
         axes[0].semilogx(frequency[1:], 10 * np.log10(np.maximum(power[1:], 1e-20)), label=name)
         start = len(samples) // 2
         wave = samples[start:start + 960, 0]
-        axes[1].plot(np.arange(len(wave)) / RATE * 1000, wave, alpha=.65, label=name)
-    axes[0].set(xlim=(20, 20000), ylim=(-160, 0), xlabel='frequency (Hz)', ylabel='PSD (dB/Hz)',
+        axes[1].plot(np.arange(len(wave)) / rate * 1000, wave, alpha=.65, label=name)
+    axes[0].set(xlim=(20, input_rate / 2 if alias_probe else 22000), ylim=(-180, 0), xlabel='frequency (Hz)', ylabel='PSD (dB/Hz)',
                 title='Raw levels; broad tone bands include clock modulation')
     axes[1].set(xlabel='segment time (ms)', ylabel='amplitude',
                 title='Independent middle file positions; not physical delay')
@@ -107,9 +126,15 @@ def analyze(args):
         'inputSha256': sha(run / 'raw-input.f32'), 'afterSha256': sha(run / 'after.f32'),
         'statsSha256': sha(run / 'stats.json'), 'executableSha256': sha(args.executable),
         'sourceFilesSha256': {name: sha(ROOT / name) for name in ['src/pcm.hpp', 'src/sinc48.hpp', 'tests/pcm_tests.cpp', 'tools/pcm_quality.py'] if (ROOT / name).is_file()},
+        'inputSampleRateHz': input_rate, 'outputSampleRateHz': output_rate,
         'ppm': ppm, 'beforeRms': rms_a, 'afterRms': rms_b,
         'rmsGainDb': float(20 * np.log10(rms_b / rms_a)), 'toneBandGains': gains,
-        'levelMatch': {'afterGainBeforeCommonAttenuation': gain, 'commonGain': common_gain},
+        'aliasBandGains': aliases,
+        'measuredChecks': {'passbandWithin005Db': all(abs(x['gainDb']) <= .05 for x in gains) if gains else None,
+                           'aliasBelowMinus80Db': all(x['gainDb'] <= -80 for x in aliases) if aliases else None},
+        'levelMatch': {'afterGainBeforeCommonAttenuation': gain if not alias_probe else None,
+                       'commonGain': common_gain if not alias_probe else None,
+                       'listeningFilesWritten': not alias_probe},
         'transportModelHealthy': stats['blocks'] > 0 and all(stats[k] == 0 for k in
                 ['underruns', 'overruns', 'invalid', 'stale', 'unavailableFramesAfterStart']),
         'prefillFrames': stats['prefillFrames'], 'startupSourceSkippedFrames': stats['startupSourceSkippedFrames'],
@@ -117,7 +142,7 @@ def analyze(args):
     }
     write_json(args.output / 'analysis.json', result)
     print(json.dumps({'output': str(args.output), 'transportModelHealthy': result['transportModelHealthy'],
-                      'toneBandGains': gains, 'rmsGainDb': result['rmsGainDb']}))
+                      'toneBandGains': gains, 'aliasBandGains': aliases, 'rmsGainDb': result['rmsGainDb']}))
 
 
 if __name__ == '__main__':
@@ -126,6 +151,8 @@ if __name__ == '__main__':
     make = commands.add_parser('probe')
     make.add_argument('--output', type=Path, required=True)
     make.add_argument('--seconds', type=int, default=70)
+    make.add_argument('--sample-rate', type=int, choices=[48000, 96000], default=48000)
+    make.add_argument('--kind', choices=['passband', 'alias'], default='passband')
     make.set_defaults(run_command=probe)
     inspect = commands.add_parser('analyze')
     inspect.add_argument('--run', type=Path, required=True)

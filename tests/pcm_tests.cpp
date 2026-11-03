@@ -115,13 +115,14 @@ void clocks(uint32_t rate, double ppm, size_t seconds) {
 }
 
 // 実Readerへ同じデジタル入力を渡すオフライン測定。実時間・実機・聴感の受入ではない。
-void quality(const std::filesystem::path &input, const std::filesystem::path &output, double ppm) {
+void quality(const std::filesystem::path &input, const std::filesystem::path &output, double ppm, uint32_t input_rate) {
+    if (input_rate != 48000 && input_rate != 96000) throw std::runtime_error("input rate must be 48000 or 96000");
     if (!std::isfinite(ppm) || std::abs(ppm) > 1000) throw std::runtime_error("ppm must be finite and within +/-1000");
     std::ifstream source(input, std::ios::binary | std::ios::ate);
     if (!source) throw std::runtime_error("cannot open input f32le");
     const auto length = std::streamoff(source.tellg());
-    if (length < 4 * 48000 * 8 || length > 300LL * 48000 * 8 || length % 8 != 0)
-        throw std::runtime_error("input must contain 4..300 seconds of stereo 48k f32le");
+    if (length < 4LL * input_rate * 8 || length > 300LL * input_rate * 8 || length % 8 != 0)
+        throw std::runtime_error("input must contain 4..300 seconds of stereo input-rate f32le");
     std::vector<float> raw(size_t(length) / sizeof(float));
     source.seekg(0); source.read(reinterpret_cast<char *>(raw.data()), std::streamsize(length));
     if (!source || !std::all_of(raw.begin(), raw.end(), [](float x) { return std::isfinite(x); }))
@@ -134,7 +135,7 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
         if (!file) throw std::runtime_error("cannot write raw measurement");
     };
     write_raw("raw-input.f32", raw);
-    Producer producer; auralyn::Reader reader; std::array<float, 1024> left{}, right{};
+    Producer producer(input_rate); auralyn::Reader reader; std::array<float, 1024> left{}, right{};
     std::vector<float> rendered; rendered.reserve(raw.size() + 4096);
     std::ofstream timeline(output / "timeline.jsonl");
     if (!timeline) throw std::runtime_error("cannot write timeline");
@@ -142,7 +143,7 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
     uint64_t written = 0, prefill = 0, unavailable = 0, skipped_at_start = 0, next_log = 48000;
     double produced = 0; bool started = false;
     for (uint64_t block = 1;; block++) {
-        produced += 1024.0 * (1 + ppm / 1e6);
+        produced += 1024.0 * input_rate / 48000 * (1 + ppm / 1e6);
         const auto total = uint64_t(produced);
         if (total > raw.size() / 2) break; // 入力末尾を無音でflushしない。
         for (; written < total; written++) {
@@ -155,7 +156,7 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
         const bool good = reader.render(producer.data.data(), left.data(), right.data(), 1024, 48000,
                                         block * 1024 * 1000000000 / 48000);
         assert(allocations == before);
-        if (good && !started) { skipped_at_start = written - 48000 / 20; started = true; }
+        if (good && !started) { skipped_at_start = written - input_rate / 20; started = true; }
         if (!good) { if (!started) prefill += 1024; else unavailable += 1024; }
         for (size_t i = 0; i < 1024; i++) { rendered.push_back(left[i]); rendered.push_back(right[i]); }
         if (block * 1024 >= next_log) {
@@ -169,14 +170,14 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
     std::ofstream stats(output / "stats.json");
     stats.precision(12);
     stats << "{\"model\":\"offline actual OBS Reader; not physical devices or real-time performance\","
-          << "\"sampleRateHz\":48000,\"channels\":2,\"ppm\":" << ppm
+          << "\"sampleRateHz\":48000,\"inputSampleRateHz\":" << input_rate << ",\"outputSampleRateHz\":48000,\"channels\":2,\"ppm\":" << ppm
           << ",\"inputFrames\":" << raw.size() / 2 << ",\"outputFrames\":" << rendered.size() / 2
           << ",\"prefillFrames\":" << prefill << ",\"startupSourceSkippedFrames\":" << skipped_at_start
           << ",\"unavailableFramesAfterStart\":" << unavailable << ",\"blocks\":" << s.blocks
           << ",\"underruns\":" << s.underruns << ",\"overruns\":" << s.overruns
           << ",\"invalid\":" << s.invalid << ",\"stale\":" << s.stale << ",\"resets\":" << s.resets
           << ",\"correctionPpm\":" << s.correction_ppm
-          << ",\"interpolation\":\"" << (s.interpolation == 1 ? "sinc48-poc" : "linear-poc") << "\",\"flushRecorded\":false}\n";
+          << ",\"interpolation\":\"" << auralyn::interpolation_name(s.interpolation) << "\",\"flushRecorded\":false}\n";
     timeline.flush(); stats.flush();
     if (!timeline || !stats || !started || unavailable || s.underruns || s.overruns || s.invalid || s.stale)
         throw std::runtime_error("offline transport measurement failed; retain evidence");
@@ -185,37 +186,78 @@ void quality(const std::filesystem::path &input, const std::filesystem::path &ou
 void sinc_boundaries() {
     assert(std::isfinite(auralyn::mono(std::numeric_limits<float>::max(), std::numeric_limits<float>::max())));
 #ifdef AURALYN_SINC48_POC
-    for (double correction : {-2000.0, 2000.0}) {
-        Producer p; auralyn::Reader reader; std::array<float, 2048> l{}, r{};
-        reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 0);
-        for (size_t i = 0; i < 5000; i++) p.push(i % 2 ? 0x7f7fffff : 0xff7fffff, 0x7f7fffff);
-        reader.stats.correction_ppm = correction;
-        const auto count = allocations;
-        assert(reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
-        assert(allocations == count && reader.stats.interpolation == 1);
-        for (size_t i = 0; i < l.size(); i++) assert(std::isfinite(l[i]) && std::isfinite(r[i]));
+    for (uint32_t rate : {48000u, 96000u}) {
+        const uint32_t written = rate == 48000 ? 5000 : 6000;
+        for (double correction : {-2000.0, 2000.0}) {
+            Producer p(rate); auralyn::Reader reader; std::array<float, 2048> l{}, r{};
+            reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 0);
+            for (size_t i = 0; i < written; i++) p.push(i % 2 ? 0x7f7fffff : 0xff7fffff, 0x7f7fffff);
+            reader.stats.correction_ppm = correction;
+            const auto count = allocations;
+            assert(reader.render(p.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
+            assert(allocations == count && reader.stats.interpolation == (rate == 48000 ? 1u : 2u));
+            for (size_t i = 0; i < l.size(); i++) assert(std::isfinite(l[i]) && std::isfinite(r[i]));
+        }
+        Producer bad(rate); auralyn::Reader reader; std::array<float, 1024> l{}, r{};
+        reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 0);
+        bad.fill(written);
+        // 出力開始位置より前のhistoryも、未完了tagを受け入れない。
+        const uint32_t history = rate == 48000 ? 63 : 127;
+        bad.data[16 + (written - rate / 20 - history) * 3] |= 1;
+        assert(!reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
+        assert(reader.stats.invalid == 1);
+        for (float value : l) assert(value == 0);
     }
-    Producer bad; auralyn::Reader reader; std::array<float, 1024> l{}, r{};
-    reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 0);
-    bad.fill(3000);
-    // 直接の出力開始位置より前のhistoryも、未完了tagを受け入れない。
-    bad.data[16 + (600 - 63) * 3] |= 1;
-    assert(!reader.render(bad.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
-    assert(reader.stats.invalid == 1);
-    for (float value : l) assert(value == 0);
+    // 96k入力の係数による周波数応答。phase補間の端と中間も確認する。
+    const auto bank = std::make_unique<auralyn::Sinc96>();
+    for (size_t phase : {size_t(0), size_t(128), size_t(256)}) {
+        for (double frequency : {100.0, 1000.0, 10000.0, 19000.0, 20000.0, 24000.0, 25000.0}) {
+            double re = 0, im = 0;
+            for (size_t k = 0; k < bank->taps; k++) {
+                const double angle = 2 * std::numbers::pi * frequency * double(k) / 96000;
+                re += bank->coefficients[phase][k] * std::cos(angle);
+                im += bank->coefficients[phase][k] * std::sin(angle);
+            }
+            const double gain = std::hypot(re, im);
+            if (frequency <= 20000) assert(gain > .999 && gain < 1.001);
+            else assert(gain < 0.0001);
+        }
+    }
+    // epochが変化しないレート切替でも旧履歴を使わず再primeする。
+    Producer switched; auralyn::Reader changing; std::array<float, 1024> l{}, r{};
+    assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 0));
+    switched.fill(3000); assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 10000000));
+    switched.data[6] = 96000;
+    assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 20000000));
+    switched.fill(6000); assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 30000000));
+    assert(changing.stats.interpolation == 2 && changing.stats.resets == 2);
+    assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 44100, 40000000));
+    switched.fill(6000); assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 44100, 50000000));
+    assert(changing.stats.interpolation == 0 && changing.stats.resets == 3);
+    switched.data[8]++;
+    assert(!changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 60000000));
+    switched.fill(6000); assert(changing.render(switched.data.data(), l.data(), r.data(), l.size(), 48000, 70000000));
+    assert(changing.stats.resets == 4 && changing.stats.interpolation == 2);
 #endif
 }
 
 int main(int argc, char **argv) {
-    if (argc == 5 && std::string(argv[1]) == "--quality") {
+    if ((argc == 5 || argc == 6) && std::string(argv[1]) == "--quality") {
         try {
             size_t parsed = 0; const std::string value(argv[4]); const double ppm = std::stod(value, &parsed);
             if (parsed != value.size()) throw std::runtime_error("invalid ppm argument");
-            quality(argv[2], argv[3], ppm); return 0;
+            uint32_t rate = 48000;
+            if (argc == 6) {
+                size_t rate_parsed = 0; const std::string text(argv[5]);
+                const auto value_rate = std::stoul(text, &rate_parsed);
+                if (rate_parsed != text.size() || (value_rate != 48000 && value_rate != 96000)) throw std::runtime_error("input rate must be 48000 or 96000");
+                rate = uint32_t(value_rate);
+            }
+            quality(argv[2], argv[3], ppm, rate); return 0;
         } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
     }
     if (argc != 1 && !(argc == 2 && std::string(argv[1]) == "--long")) {
-        std::cerr << "Usage: pcm_tests [--long | --quality input.f32 new-output-directory ppm]\n"; return 2;
+        std::cerr << "Usage: pcm_tests [--long | --quality input.f32 new-output-directory ppm [input-rate]]\n"; return 2;
     }
     const size_t seconds = argc == 2 && std::string(argv[1]) == "--long" ? 3600 : 120;
     fixture(); failures(); sinc_boundaries();

@@ -72,7 +72,7 @@ struct Source {
            <<",\"minQueued\":"<<telemetry.min_queued.load()<<",\"maxQueued\":"<<telemetry.max_queued.load()
            <<",\"correctionPpm\":"<<telemetry.correction_ppm.load()<<",\"producerFrame\":"<<frame
            <<",\"producerRate\":"<<rate<<",\"state\":"<<state
-           <<",\"interpolation\":\""<<(telemetry.interpolation.load() == 1 ? "sinc48-poc" : "linear-poc")<<"\"}\n";
+           <<",\"interpolation\":\""<<auralyn::interpolation_name(telemetry.interpolation.load())<<"\"}\n";
         out.close();
         MoveFileExW(pending.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
     }

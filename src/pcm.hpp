@@ -29,6 +29,9 @@ inline bool valid(const uint32_t *p) noexcept {
         load(p, 3) == bytes && load(p, 4) == capacity && load(p, 5) == 2 &&
         (rate == 44100 || rate == 48000 || rate == 96000) && load(p, 7) != 0;
 }
+inline const char *interpolation_name(uint32_t value) noexcept {
+    return value == 1 ? "sinc48-poc" : value == 2 ? "sinc96-to48-poc" : "linear-poc";
+}
 struct Stats {
     uint64_t blocks = 0, underruns = 0, overruns = 0, invalid = 0, stale = 0, resets = 0;
     uint32_t queued = 0, min_queued = UINT32_MAX, max_queued = 0;
@@ -39,8 +42,9 @@ class Reader {
 #ifdef AURALYN_SINC48_POC
     // control側で生成・破棄。renderでは係数の再構築や割当を行わない。
     std::unique_ptr<Sinc48> sinc_ = std::make_unique<Sinc48>();
+    std::unique_ptr<Sinc96> sinc96_ = std::make_unique<Sinc96>();
 #endif
-    uint32_t cursor_ = 0, epoch_ = UINT32_MAX, last_write_ = 0;
+    uint32_t cursor_ = 0, epoch_ = UINT32_MAX, last_write_ = 0, source_rate_ = 0, output_rate_ = 0;
     uint64_t progress_ns_ = 0;
     double phase_ = 0;
     bool primed_ = false, stalled_ = false;
@@ -57,14 +61,15 @@ class Reader {
     void reprime(uint32_t write) noexcept { cursor_ = write; phase_ = 0; primed_ = false; }
 public:
     Stats stats;
-    void disconnect() noexcept { epoch_ = UINT32_MAX; primed_ = false; phase_ = 0; stats.correction_ppm = 0; }
+    void disconnect() noexcept { epoch_ = UINT32_MAX; source_rate_ = 0; output_rate_ = 0; primed_ = false; phase_ = 0; stats.correction_ppm = 0; }
     bool render(const uint32_t *p, float *left, float *right, size_t frames, uint32_t obs_rate, uint64_t now) noexcept {
         std::fill_n(left, frames, 0.0f); std::fill_n(right, frames, 0.0f);
         if (!p) { disconnect(); return false; }
         if (!valid(p) || !obs_rate || !frames || frames > 2048) { stats.invalid++; disconnect(); return false; }
-        const auto write = load(p, 10), epoch = load(p, 8), state = load(p, 9);
-        if (epoch != epoch_) {
-            epoch_ = epoch; reprime(write); last_write_ = write; progress_ns_ = now;
+        const auto write = load(p, 10), epoch = load(p, 8), state = load(p, 9), rate = load(p, 6);
+        if (rate != 44100 && rate != 48000 && rate != 96000) { stats.invalid++; disconnect(); return false; }
+        if (epoch != epoch_ || rate != source_rate_ || obs_rate != output_rate_) {
+            epoch_ = epoch; source_rate_ = rate; output_rate_ = obs_rate; reprime(write); last_write_ = write; progress_ns_ = now;
             stalled_ = false; stats.resets++; stats.correction_ppm = 0;
         }
         if (state != 1) { reprime(write); return false; }
@@ -73,14 +78,14 @@ public:
             if (!stalled_) stats.stale++;
             stalled_ = true; reprime(write); return false;
         }
-        const auto rate = load(p, 6), target = rate / 20;
-        bool use_sinc = false;
+        const auto target = rate / 20;
+        uint32_t sinc_kind = 0;
         uint32_t history = 0, lookahead = 0;
 #ifdef AURALYN_SINC48_POC
-        use_sinc = rate == 48000 && obs_rate == 48000;
-        if (use_sinc) { history = uint32_t(Sinc48::past); lookahead = uint32_t(Sinc48::future); }
+        if (obs_rate == 48000 && rate == 48000) { sinc_kind = 1; history = uint32_t(Sinc48::past); lookahead = uint32_t(Sinc48::future); }
+        if (obs_rate == 48000 && rate == 96000) { sinc_kind = 2; history = uint32_t(Sinc96::past); lookahead = uint32_t(Sinc96::future); }
 #endif
-        stats.interpolation = use_sinc ? 1u : 0u;
+        stats.interpolation = sinc_kind;
         uint32_t available = write - cursor_;
         if (available >= capacity - 2) {
             stats.overruns++; reprime(write); return false;
@@ -98,21 +103,24 @@ public:
         if (available < needed) { stats.underruns++; reprime(write); return false; }
         bool good = true;
 #ifdef AURALYN_SINC48_POC
-        if (use_sinc) {
+        if (sinc_kind) {
             const size_t count = size_t(needed) + history;
-            if (count > Sinc48::cache_frames) good = false;
+            if (count > (sinc_kind == 1 ? Sinc48::cache_frames : Sinc96::cache_frames)) good = false;
             for (size_t i = 0; good && i < count; i++) {
                 std::array<float, 2> value{};
                 if (!frame(p, cursor_ - history + uint32_t(i), value)) { good = false; break; }
-                sinc_->left[i] = value[0]; sinc_->right[i] = value[1];
+                if (sinc_kind == 1) { sinc_->left[i] = value[0]; sinc_->right[i] = value[1]; }
+                else { sinc96_->left[i] = value[0]; sinc96_->right[i] = value[1]; }
             }
         }
 #endif
         for (size_t i = 0; i < frames; i++) {
             if (!good) break;
 #ifdef AURALYN_SINC48_POC
-            if (use_sinc) {
-                sinc_->sample(phase_, left[i], right[i]); phase_ += step; continue;
+            if (sinc_kind) {
+                if (sinc_kind == 1) sinc_->sample(phase_, left[i], right[i]);
+                else sinc96_->sample(phase_, left[i], right[i]);
+                phase_ += step; continue;
             }
 #endif
             const auto integral = uint32_t(phase_);
@@ -124,7 +132,7 @@ public:
             right[i] = std::lerp(a[1], b[1], fraction);
             phase_ += step;
         }
-        if (!good || load(p, 8) != epoch || load(p, 9) != 1) {
+        if (!good || load(p, 8) != epoch || load(p, 9) != 1 || load(p, 6) != rate) {
             std::fill_n(left, frames, 0.0f); std::fill_n(right, frames, 0.0f);
             if (!good) stats.invalid++;
             reprime(load(p, 10)); return false;

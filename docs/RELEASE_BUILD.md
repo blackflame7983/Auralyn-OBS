@@ -1,6 +1,6 @@
 # 未公開の配布候補と別ディレクトリでのビルド
 
-この候補はOBS 32.2.2 / Windows x64、48 kHz Sinc試作に限定する。未署名・未公開・公開未承認である。48 kHz以外は線形補間となる。実機1時間検証は指定した検証済みパッケージのDLLに限り、再ビルドしたDLLには適用しない。
+この候補はOBS 32.2.2 / Windows x64、48/96kHz入力→48kHz出力のSinc試作に限定する。未署名・未公開・公開未承認である。その他の組み合わせは線形補間となる。実機1時間検証は指定した検証済みパッケージのDLL・入力条件に限り、再ビルドしたDLLや別条件には適用しない。
 
 ## 候補生成
 
@@ -17,6 +17,9 @@ python tools/prepare_release.py --original build/packages/検証済みパッケ�
 manifestのcompiler、linker、生成config、import元OBS DLL等のSHAは候補生成時の観測値であり、指定したDLLのビルド時に同一であった証明ではない。パスや環境変数は記載しない。
 
 ## ソースZIPから別ディレクトリへ再ビルド
+
+事後clock解析を用いた候補では、元の固定比率判定を保存し、解析方式・±2000ppm上限・全6区間の局所整合・解析source・録画/参照/元証拠のSHAも照合する。
+追加解析だけを録音前からの凍結manifestへ書き戻さず、事後解析であることをmanifest内の証拠に明示する。
 
 Windows x64、Visual Studio 2022 C++ toolchain、CMake 3.24以降、Python、OBS 32.2.2の `obs.dll` が必要。OBSのDLLはZIPに含まれない。未作成の作業フォルダーへsource ZIPを展開して以下を実行する。既存の `build/cmake` は指定しない。
 

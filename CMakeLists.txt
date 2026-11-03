@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(auralyn_obs VERSION 0.1.0 LANGUAGES CXX)
-option(AURALYN_SINC48_POC "Experimental 48k-to-48k sinc interpolation; other rates retain linear interpolation" OFF)
+option(AURALYN_SINC48_POC "Experimental 48k/96k-to-48k sinc interpolation; other rates retain linear interpolation" OFF)
 if(AURALYN_SINC48_POC)
   add_compile_definitions(AURALYN_SINC48_POC=1)
 endif()
